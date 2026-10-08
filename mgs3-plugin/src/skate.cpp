@@ -570,7 +570,15 @@ DWORD WINAPI run(LPVOID) {
     float floor_y = 0.f;
     const int floor_found = floor_fn ? floor_fn(session, m[12], m[13] + kFloorProbe, m[14], &floor_y) : 1;
     const bool off_stage = floor_found == 0 || (floor_found == 1 && floor_fn && m[13] - floor_y > kMaxDrop);
-    if (off_stage || m[13] < last_good.at[1] - kFallLimit) {
+    float spot_floor = 0.f;
+    const bool spot_has_floor =
+        !floor_fn || floor_fn(session, last_good.at[0], last_good.at[1] + kFloorProbe, last_good.at[2], &spot_floor) == 1;
+    if ((off_stage || m[13] < last_good.at[1] - kFallLimit) && !spot_has_floor) {
+      // The spot he'd go back to is off the stage too (e.g. a start placed outside it): stop
+      // rather than respawn there forever.
+      log("skate: no floor at %.2f %.2f %.2f either; off", last_good.at[0], last_good.at[1], last_good.at[2]);
+      g_request = 0;
+    } else if (off_stage || m[13] < last_good.at[1] - kFallLimit) {
       log("skate: left the stage at %.2f %.2f %.2f (floor %s); back to %.2f %.2f %.2f (m)", m[12], m[13], m[14],
           floor_found == 1 ? "far below" : "none", last_good.at[0], last_good.at[1], last_good.at[2]);
       if (f.activate(session, last_good.at, last_good.heading) || f.root(session, m)) {
