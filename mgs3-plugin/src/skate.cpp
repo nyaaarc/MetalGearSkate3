@@ -401,7 +401,7 @@ DWORD WINAPI run(LPVOID) {
   if (!session) return 0;
   if (posing) log("skate: retargeting onto %s (mirror_x %d)", mdl.string().c_str(), mirror);
   // The skater's sound (Skate 3's audio runtime in the DLL, from setup's audio export).
-  if (ini_string("audio", "1") != "0" && audio::start(g_ffi_module, std::stof(ini_string("audio_volume", "1")))) {
+  if (ini_string("audio", "1") != "0" && audio::start(g_ffi_module, std::stof(ini_string("audio_volume", "2.5")))) {
     audio::use_session(session, data.c_str());
   }
   Spare spare;

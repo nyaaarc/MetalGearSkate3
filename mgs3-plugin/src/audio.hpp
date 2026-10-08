@@ -12,9 +12,15 @@
 // tick; this module only moves the rendered samples to the device.
 namespace audio {
 
-// Open the device and start the output thread. `volume` (0..1) scales the output. False if the
+// Open the device and start the output thread. `volume` (0..kMaxVolume) scales the output; above
+// 1 the engine's (quiet) mix is boosted, with a soft limiter. False if the
 // DLL has no audio exports or no output device opened (logged; skating works without sound).
+constexpr float kMaxVolume = 4.f;
 bool start(HMODULE ffi, float volume);
+
+// Change the volume live (0..kMaxVolume).
+void set_volume(float volume);
+float volume();
 
 // The session whose sound plays (null: silence). Starts its sound in the DLL first if needed,
 // from the converted data's `assets` folder; false if that failed (logged).

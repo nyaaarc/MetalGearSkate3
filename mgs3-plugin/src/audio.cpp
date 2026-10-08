@@ -1,5 +1,7 @@
 #include "audio.hpp"
 
+#include <cmath>
+
 #include <audioclient.h>
 #include <mmdeviceapi.h>
 #include <mmreg.h>
@@ -101,8 +103,14 @@ void play_device() {
       if (g_playing && session && g_render(session, reinterpret_cast<float*>(data), frames) == 0) {
         const float volume = g_volume.load(std::memory_order_relaxed);
         if (volume != 1.f) {
+          // Above 1 the engine's mix is boosted; a soft knee above 0.8 keeps peaks from clipping.
           float* f = reinterpret_cast<float*>(data);
-          for (UINT32 i = 0; i < frames * 2; ++i) f[i] *= volume;
+          for (UINT32 i = 0; i < frames * 2; ++i) {
+            float x = f[i] * volume;
+            const float a = std::fabs(x);
+            if (a > 0.8f) x = std::copysign(0.8f + 0.2f * std::tanh((a - 0.8f) / 0.2f), x);
+            f[i] = x;
+          }
         }
       } else {
         flags = AUDCLNT_BUFFERFLAGS_SILENT;
@@ -135,6 +143,10 @@ DWORD WINAPI run(LPVOID) {
 
 }  // namespace
 
+void set_volume(float volume) { g_volume = volume < 0.f ? 0.f : (volume > kMaxVolume ? kMaxVolume : volume); }
+
+float volume() { return g_volume.load(); }
+
 bool start(HMODULE ffi, float volume) {
   g_render = reinterpret_cast<RenderFn>(GetProcAddress(ffi, "mgsk_audio_render"));
   g_start = reinterpret_cast<StartFn>(GetProcAddress(ffi, "mgsk_audio_start"));
@@ -144,7 +156,7 @@ bool start(HMODULE ffi, float volume) {
     log("audio: skate_ffi.dll has no audio exports; the skater is silent");
     return false;
   }
-  g_volume = volume < 0.f ? 0.f : (volume > 1.f ? 1.f : volume);
+  set_volume(volume);
   g_stop = false;
   g_thread = CreateThread(nullptr, 0, run, nullptr, 0, nullptr);
   return g_thread != nullptr;

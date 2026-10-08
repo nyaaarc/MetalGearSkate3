@@ -157,6 +157,13 @@ std::string run(const std::string& line) {
     skate::reset_recent();
     return "ok";
   }
+  if (verb == "audio") {  // audio volume <0..4>
+    std::string key;
+    float value = 0;
+    if (!(in >> key >> value) || key != "volume") return "error: usage audio volume <0..4>";
+    audio::set_volume(value);
+    return "ok volume " + std::to_string(audio::volume());
+  }
   if (verb == "stealth") {
     std::string arg;
     in >> arg;
