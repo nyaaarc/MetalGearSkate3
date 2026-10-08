@@ -434,7 +434,7 @@ DWORD WINAPI run(LPVOID) {
     {
       const float dx = m[12] - st.skater[0], dz = m[14] - st.skater[2];
       st.speed_mps = std::sqrt(dx * dx + dz * dz) / period;
-      if (f.state(session, st.engine_state, sizeof(st.engine_state)) != 0) st.engine_state[0] = 0;
+      if (f.state(session, st.engine_state, sizeof(st.engine_state)) < 0) st.engine_state[0] = 0;  // returns name length
     }
     st.skater[0] = m[12];
     st.skater[1] = m[13];
