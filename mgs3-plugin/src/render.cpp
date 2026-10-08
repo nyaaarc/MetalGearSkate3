@@ -66,9 +66,10 @@ struct Settings {
   //        game's camera constants are rewritten), otherwise as `game`;
   // game:   the game's own view-projection (captured), untouched;
   // object: the old guess, camera object + fov_deg/near_mm/far_mm/aspect/flip_z;
-  // drive:  the game's own camera, moved onto the skate camera (camera.cpp), so the game draws
-  //         and culls the scene from there itself; drawn like `game`.
-  enum class Camera { Skate, Game, Object, Drive } camera = Camera::Skate;
+  // drive:  (default) the game's own camera, moved onto the skate camera (camera.cpp), so the
+  //         game draws and culls the scene from there itself; drawn like `game`. Falls back to
+  //         `skate` if the camera hook isn't installed.
+  enum class Camera { Skate, Game, Object, Drive } camera = Camera::Drive;
   float skate_fov_deg = 0.f;  // vertical fov for the skate camera; 0 = the engine's
 };
 
@@ -131,6 +132,11 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
     else ok = false;
     if (ok) camera::set_driving(n.camera == Settings::Camera::Drive);
   }
+  else if (key == "drive_zoom") {
+    float zoom = 0.f;
+    ok = parse_float(value, zoom) && zoom >= 0.f && zoom < 20.f;
+    if (ok) camera::set_zoom(zoom);
+  }
   else if (key == "skate_fov_deg") ok = parse_float(value, n.skate_fov_deg) && n.skate_fov_deg >= 0.f && n.skate_fov_deg < 170.f;
   else return "unknown key (camera skate_fov_deg fov_deg near_mm far_mm aspect flip_z depth_game depth_bias depth_debug textures debug)";
   if (!ok) return "bad value for " + key;
@@ -140,7 +146,7 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
 
 void load_settings(const std::filesystem::path& ini) {
   Settings s;
-  for (const char* key : {"camera", "skate_fov_deg", "fov_deg", "near_mm", "far_mm", "aspect", "flip_z", "depth_game",
+  for (const char* key : {"camera", "drive_zoom", "skate_fov_deg", "fov_deg", "near_mm", "far_mm", "aspect", "flip_z", "depth_game",
                           "depth_bias", "depth_debug", "textures", "debug"}) {
     char value[64] = {};
     GetPrivateProfileStringA("render", key, "", value, sizeof(value), ini.string().c_str());
@@ -1682,7 +1688,9 @@ void frame(IDXGISwapChain* swap) {
   {
     float cam[skate::kCameraFloats];
     DXGI_SWAP_CHAIN_DESC sd{};
-    if (s.camera == Settings::Camera::Skate && skate::camera(cam) && SUCCEEDED(swap->GetDesc(&sd)) &&
+    const bool skate_mode =
+        s.camera == Settings::Camera::Skate || (s.camera == Settings::Camera::Drive && !camera::driving());
+    if (skate_mode && skate::camera(cam) && SUCCEEDED(swap->GetDesc(&sd)) &&
         sd.BufferDesc.Width > 0 && sd.BufferDesc.Height > 0) {
       const float bb_aspect = static_cast<float>(sd.BufferDesc.Width) / static_cast<float>(sd.BufferDesc.Height);
       const Mat next = skate_view_projection(cam, s.aspect > 0.f ? s.aspect : bb_aspect, s.skate_fov_deg, 50.f);

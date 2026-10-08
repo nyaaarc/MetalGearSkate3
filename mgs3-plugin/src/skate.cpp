@@ -43,10 +43,9 @@ constexpr float kFloorProbe = 1.5f;
 // under him, which can differ from the .geom the skater rides. The game also nudges him a little
 // on ordinary floor (it settles him to its own idea of his height), so only a drop this big
 // (mm) between two writes counts: by then his fall speed has built up over a fraction of a
-// second. This many such ticks in a row while the engine says the skater is on the ground means
-// the game won't hold Snake there.
+// second. Used on skate off: Snake is handed back on the last spot the game held him. (Respawning
+// the skater mid-ride on this signal misfired on stairs and slopes, freezing him in place.)
 constexpr float kGameDropMm = 150.f;
-constexpr int kGameFallTicks = 10;
 
 struct Ffi {
   decltype(&mgsk_session_new) session_new;
@@ -588,16 +587,6 @@ DWORD WINAPI run(LPVOID) {
         game_falling = 0;
         game_safe = {{st.skater[0], st.skater[1], st.skater[2]}, st.heading_deg * std::numbers::pi_v<float> / 180.f};
       }
-    }
-    if (game_falling > kGameFallTicks && strstr(st.engine_state, "Ground")) {
-      log("skate: the game has no floor for Snake at %.2f %.2f %.2f; back to %.2f %.2f %.2f (m)", m[12], m[13], m[14],
-          game_safe.at[0], game_safe.at[1], game_safe.at[2]);
-      if (f.activate(session, game_safe.at, game_safe.heading) || f.root(session, m)) {
-        log("skate: respawn failed: %s", f.last_error());
-        continue;
-      }
-      game_falling = 0;
-      placed = true;
     }
     // Translation is the last column of the column-major root matrix.
     snake->x = m[12] * kMmPerUnit;

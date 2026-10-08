@@ -14,6 +14,10 @@ bool init();
 void set_driving(bool on);
 bool driving();
 
+// The game camera's zoom factor while driving (its +0x9C); 0 (default) matches the skate
+// camera's field of view.
+void set_zoom(float zoom);
+
 // Camera updates overridden so far (diagnostics).
 uint64_t driven();
 

@@ -50,7 +50,7 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 - `skate_ffi.dll` runs the genuine Skate 3 engine headless on converted data: `tools/ffi_smoke.py`
   puts the skater on a flat floor, pushes, and he rolls (~7.5 units/s, engine units look like metres).
 - The plugin finds Snake by signature on every launch and reads his real position (writing it
-  moves him in game). Camera look-at/eye and Snake's skeleton are mapped (`docs/formats.md`).
+  moves him in game). Camera eye/target and Snake's skeleton are mapped (`docs/formats.md`).
 
 - Skating in game: F5 hands Snake to the Skate 3 engine using the game's own pad state, so any
   Steam Input controller works. Checked in game (run 15, s091a): pushes build 2.7, 4.9, 7.6 m/s;
@@ -70,8 +70,9 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
   read from its vertex-shader constants each frame; in game it sits on the ground under Snake.
 - While skating, Snake is drawn in the skater's pose (his GPU bone palette is rewritten from
   `mgsk_snake_pose` each frame): pushing, riding and bailing.
-- While skating, the whole frame is drawn from Skate 3's own chase camera (`mgsk_camera`): the
-  game's camera constants are rewritten per draw, so scenery, Snake and the board all follow it.
+- While skating, MGS3's own camera follows Skate 3's chase camera (`mgsk_camera`; eye, aim and
+  field of view set in the game's camera update), so the game draws and culls the scene from
+  there and riding in any direction shows the whole stage.
 - Grind rails: `mgsk_install_geom` finds the stage's grindable lips (ledges, kerbs, box and
   railing tops; `skate-ffi/src/rails.rs`) and gives them to the engine as rails. Offline,
   `tools/rails_check.py --grind` ollies onto 0.5 m ledges in s091a and the engine grinds

@@ -3,6 +3,8 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cmath>
+#include <numbers>
 #include <cstring>
 
 #include <safetyhook.hpp>
@@ -14,21 +16,34 @@
 namespace camera {
 namespace {
 
-// The camera update (exe+AF050 on MC 3.0.0) copies a camera object's look-at point (+0x40) and
-// eye (+0x50) into working copies and builds the view from them; the game's smoothing writes
-// those two before the call. Found by its body (movups xmm0,[rcx+0x40]; mov rdi,[rcx+0x10];
+// The camera update (exe+AF050 on MC 3.0.0) copies a camera object's eye (+0x40) and target
+// (+0x50) into working copies (+0x2D0, +0x2E0) and builds the view from them with a look-at
+// (exe+C4290); the game's smoothing writes those two before the call. Found by its body (movups xmm0,[rcx+0x40]; mov rdi,[rcx+0x10];
 // lea r14,[rcx+0x2e0]) at +0x73 into the function.
 constexpr std::string_view kUpdateBodySig = "0F 10 41 40 48 8B 79 10 4C 8D B1 E0 02 00 00";
 constexpr size_t kUpdateBodyOffset = 0x73;
 // lea rax,[cameras]; cmp rax,rbx; jne: the camera table, whose entry 0 is the main camera.
 constexpr std::string_view kMainCameraSig = "48 8D 05 ?? ?? ?? ?? 48 3B C3 0F 85";
-constexpr size_t kLookAt = 0x40, kEye = 0x50;
-// The look-at point: the skater, this far (mm) above the board, like the game's own (~1 m up).
-constexpr float kLookHeightMm = 1000.f;
+constexpr size_t kEye = 0x40, kTarget = 0x50;
+// Zoom factor (1.9 in s091a): the update multiplies it by +0xA0 into +0x32C, which goes to the
+// view/projection setup with the view matrix. Rewritten by the game every frame.
+constexpr size_t kZoom = 0x9C;
+// Reference yaw (i16, 65536 = turn, atan2(dx, dz) from eye to target). After building the view
+// the update turns the eye/target into angles (pitch +0x320, yaw +0x322) and, if the yaw is more
+// than ~170 degrees (0x78E3) from this one or the pitch is over ~80 degrees (0x38E3), forces an
+// 80-degree overhead view along it. A chase camera facing away from it would go top-down.
+constexpr size_t kReferenceYaw = 0x92;
+// The projection's vertical scale (cot of half the vertical fov) per unit of zoom: 2.434 at the
+// game's 1.9 (s091a, 3440x1440). Used to give the game the skate camera's field of view.
+constexpr float kScalePerZoom = 2.434f / 1.9f;
+// The target: this far (mm) along the skate camera's forward from its eye (the direction alone
+// sets the view; the distance just keeps it well conditioned).
+constexpr float kTargetDistanceMm = 4000.f;
 
 SafetyHookInline g_hook;
 uint8_t* g_main = nullptr;
-std::atomic<bool> g_driving{false};
+std::atomic<bool> g_driving{true};  // the default render camera (`drive`)
+std::atomic<float> g_zoom{0.f};  // 0 = leave the game's
 std::atomic<uint64_t> g_driven{0};
 
 void __fastcall on_update(uint8_t* cam) {
@@ -37,10 +52,18 @@ void __fastcall on_update(uint8_t* cam) {
     if (skate::camera(c)) {
       // c: eye (3, mm), basis columns (side, up, forward), vertical fov (degrees).
       const float eye[3] = {c[0], c[1], c[2]};
-      const skate::Status st = skate::status();
-      const float look[3] = {st.skater[0] * 1000.f, st.skater[1] * 1000.f + kLookHeightMm, st.skater[2] * 1000.f};
-      memcpy(cam + kLookAt, look, sizeof(look));
+      const float* forward = c + 9;
+      const float look[3] = {eye[0] + forward[0] * kTargetDistanceMm, eye[1] + forward[1] * kTargetDistanceMm,
+                             eye[2] + forward[2] * kTargetDistanceMm};
       memcpy(cam + kEye, eye, sizeof(eye));
+      memcpy(cam + kTarget, look, sizeof(look));
+      const auto yaw = static_cast<int16_t>(
+          std::lround(std::atan2(look[0] - eye[0], look[2] - eye[2]) * 32768.f / std::numbers::pi_v<float>));
+      memcpy(cam + kReferenceYaw, &yaw, sizeof(yaw));
+      float zoom = g_zoom.load(std::memory_order_relaxed);
+      const float fov = c[12] * std::numbers::pi_v<float> / 180.f;
+      if (zoom <= 0.f && fov > 0.1f && fov < 3.f) zoom = 1.f / std::tan(fov / 2.f) / kScalePerZoom;
+      if (zoom > 0.f) memcpy(cam + kZoom, &zoom, sizeof(zoom));
       g_driven.fetch_add(1, std::memory_order_relaxed);
     }
   }
@@ -66,6 +89,8 @@ bool init() {
 }
 
 void set_driving(bool on) { g_driving = on; }
+
+void set_zoom(float zoom) { g_zoom = zoom; }
 
 bool driving() { return g_driving && g_hook; }
 

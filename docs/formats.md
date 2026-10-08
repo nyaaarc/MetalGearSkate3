@@ -97,11 +97,25 @@ analogues to find, guided by the MGS2 patterns and the GirianSeed decomp.
 
 ## Runtime findings (MGS3 MC 3.0.0)
 
-- **Camera system (static), `exe+1D39D80`:** `+0x10` pointer to a heap camera-target
-  object, `+0x40` look-at point (float3, mm), `+0x50` camera eye (float3). `+0x2D0`/`+0x2E0`
-  are per-frame working copies. Updated by the function at `exe+AF050` (starts
-  `movups xmm0,[rcx+0x40]`); `exe+AF6C0` integrates a step into it. All rebuilt each frame
-  from camera smoothing (`exe+213xxx`, weights of 1/6), so writing them does nothing.
+- **Camera system (static), `exe+1D39D80`:** a table of camera objects (0x5B0 bytes each;
+  entry 0 is the main camera, `exe+AFB80` compares against it). `+0x10` pointer to a heap
+  camera-target object, `+0x40` **eye** (float3 + w = 400, mm), `+0x50` **target** (float3 +
+  w). (Earlier notes had these two swapped: in s091a the target sits on Snake and the eye
+  ~3.9 m behind and 1 m above.) Smoothing (`exe+213xxx`, weights of 1/6) rewrites them every
+  frame, so a plain write is undone. The update `exe+AF050` (rcx = camera; found by its body
+  `0F 10 41 40 48 8B 79 10 4C 8D B1 E0 02 00 00` at +0x73) copies them to working copies
+  `+0x2D0`/`+0x2E0`, builds the view with a look-at (`exe+C4290`: out, eye, target; fixed up)
+  plus roll (`+0x94`, i16) and an offset matrix (`+0x580`), optionally clamps eye and target to
+  boxes in the target object (`+0x1E0..+0x1F0`, `+0x200..+0x210`, when its `+0xC` bits 8/9
+  are set; skipped when camera flag `0x100` is set) and adds eased offsets (`+0x60`, `+0x70`).
+  It then turns eye/target into angles: pitch `+0x320` = atan2(-dy, horizontal), yaw `+0x322`
+  = atan2(dx, dz) (i16, 65536 = turn), distance `+0x328`. **If the yaw is more than 0x78E3
+  (~170 degrees) from a reference yaw at `+0x92`, or the pitch exceeds 0x38E3 (~80 degrees),
+  it forces an 80-degree overhead view along `+0x92`** (`exe+AF835..AF88F`). Zoom: `+0x9C`
+  (1.9 in s091a) times `+0xA0` (1.0) goes to `+0x32C` and on to the projection setup with the
+  view (`exe+?DE60`); the vertical projection scale is 1.281 x zoom (2.434 at 1.9). Writing eye,
+  target, `+0x92` (the chase camera's own yaw) and `+0x9C` at the start of the update puts the
+  game's camera, and so its drawing and culling, anywhere (`camera.cpp`, `render camera drive`).
 - **`linkvarbuf+0xA58` (= `exe+1E236CC` this build):** int32 copy of the look-at point,
   written by `exe+AFB9B` (`cvttss2si ecx,[rsi]; mov rax,[linkvarbuf]; mov [rax+0xA58],ecx`).
 - The look-at point is about 2 m above the ground, so it's not Snake's root. Its negation
