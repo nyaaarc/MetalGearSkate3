@@ -56,11 +56,15 @@ The stage's real collision is loaded on F5; Snake still plays his walk animation
   game's own pad state, so any Steam Input controller works; Snake faces the direction of travel.
 - Stage collision: `.geom` decoded (`tools/geom.py`, Rust `skate-ffi/src/geom.rs`, identical output);
   the current stage's collision is loaded into the engine on F5.
+- Board data for drawing: `mgsk_board_pose` gives the engine's seven board bodies (deck, trucks,
+  wheels) as world transforms, and `mgsk_board_mesh` reads each part's mesh from the converted
+  `skater.glb` in that body's frame; `tools/board_check.py` checks both off-game.
 
 ## What's missing
 
 - A stable lookup for the camera and skeleton
 - Feeding MGS3 collision to the skate world; posing Snake from the skater
+- Drawing the board in game (the plugin does not use the board exports yet; flat colours, no textures)
 - Setup (finding MGS3, converting your Skate 3 files), settings menu, audio
 
 ## Credits

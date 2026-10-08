@@ -21,6 +21,27 @@ typedef struct MgskControls {
 
 typedef char mgsk_controls_size_check[sizeof(MgskControls) == 12 ? 1 : -1];
 
+/* Engine board bodies, the order of mgsk_board_pose and the part of mgsk_board_mesh. */
+enum {
+  MGSK_BODY_RIGHT_FRONT_WHEEL = 0,
+  MGSK_BODY_LEFT_FRONT_WHEEL = 1,
+  MGSK_BODY_RIGHT_BACK_WHEEL = 2,
+  MGSK_BODY_LEFT_BACK_WHEEL = 3,
+  MGSK_BODY_FRONT_TRUCK = 4,
+  MGSK_BODY_BACK_TRUCK = 5,
+  MGSK_BODY_DECK = 6,
+  MGSK_BODY_COUNT = 7
+};
+
+/* One skateboard mesh vertex, in its body's local frame (metres). uv is glTF's (0,0 top left). */
+typedef struct MgskBoardVertex {
+  float position[3];
+  float normal[3];
+  float uv[2];
+} MgskBoardVertex;
+
+typedef char mgsk_board_vertex_size_check[sizeof(MgskBoardVertex) == 32 ? 1 : -1];
+
 /* Static string identifying this build. Never null. */
 const char* mgsk_version(void);
 /* Message for the last failure on this thread. Never null; empty if none. */
@@ -48,6 +69,18 @@ int mgsk_activate(MgskSession* session, const float* position, float heading);
 int mgsk_tick(MgskSession* session, const MgskControls* controls);
 /* Writes the skater root transform (16 floats, column-major). */
 int mgsk_root(const MgskSession* session, float* out);
+/* Writes up to max_bodies board part world transforms (16 floats each, column-major) to out,
+ * in MGSK_BODY_* order. Returns the count written, or -1. */
+int mgsk_board_pose(const MgskSession* session, float* out, uint32_t max_bodies);
+/* Reads board part `body` (MGSK_BODY_*) from assets_dir/private/skater.glb in that body's
+ * local frame; draw it with the body's mgsk_board_pose transform. The deck part has the deck
+ * and baseplates, each truck its hanger, each wheel itself. Triangles are index triples,
+ * counter-clockwise from outside, engine axes (+Y up, +Z to the nose, right-handed).
+ * Sets *out_vertices/*out_indices to the part's sizes and copies it only if both buffers fit.
+ * Returns 1 if copied, 0 if only sizes were reported, -1 on failure. Parses the file on
+ * every call: load once. */
+int mgsk_board_mesh(const char* assets_dir, uint32_t body, MgskBoardVertex* vertices, uint32_t max_vertices,
+                    uint16_t* indices, uint32_t max_indices, uint32_t* out_vertices, uint32_t* out_indices);
 
 #ifdef __cplusplus
 }

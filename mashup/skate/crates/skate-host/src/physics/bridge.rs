@@ -185,6 +185,15 @@ impl Session {
             state: format!("{:?}", self.skater.player_state.current()),
         }
     }
+
+    /// World transforms of the seven board parts, in `BodyId` order.
+    pub fn board_parts(&self) -> [Mat4; skate_core::physics::board::BODY_COUNT] {
+        self.physics.board.part_transforms().map(|part| {
+            let [x, y, z] = part.basis.columns.map(Vec3::from_array);
+            let t = part.translation;
+            Mat4::from_cols(x.extend(0.), y.extend(0.), z.extend(0.), Vec3::new(t.x, t.y, t.z).extend(1.))
+        })
+    }
 }
 
 /// Collision for `Session::install_collision`, built off the simulation.

@@ -251,14 +251,19 @@ nowhere sensible (8-byte vertex units with tag 1 whose x is 8212 = 0x2014, e.g. 
 
 MGS1's HZD (FoxdieTeam/mgs_reversing `fmt_hzd.h`) is not the layout; vocabulary only.
 - **Controller state (emulated DualShock 2, MC 3.0.0):**
-  - Raw pads from Steam Input at `exe+1E2C500`, 0x24 bytes each: u16 buttons, u8 ?, u8 ?,
-    then sticks RX RY LX LY (0..255, centre 0x80, up = 0), pressure bytes after (Cross → `FF`).
+  - Raw pads from Steam Input at `exe+1E2C4F8`, 0x24 bytes each: `+0` u32 status (0xF0000 bits),
+    `+8` u16 buttons, `+0xC` sticks RX RY LX LY (0..255, centre 0x80, up = 0), `+0x10..` pressure
+    bytes (Cross → `FF`). Read directly by other code too (e.g. exe+24AE6, exe+1912AF).
   - Processed pads at `exe+1D798F8`, 0x44 bytes each, 2 pads: `+0` i32 (-1 when connected),
     `+4` u16 buttons, `+6` u16 (0x30 seen), `+8` RX RY LX LY. Gameplay reads these.
   - Buttons are PS2 bits, active high. Verified: Cross = 0x4000 (Steam Controller "A"),
     left stick Y forward = 0. Rest assumed standard PS2 order.
   - Per-frame pad update `exe+111DF0` copies raw → processed for 2 pads (calls `exe+111C80`
     per pad). Signature `48 8D 2D ?? ?? ?? ?? 44 8B F1 48 89 6C 24 68` (disp at +3) → pads.
-    Hooking it is the way to read input and to blank it while skating.
+    `exe+111C80(dst=rcx, src=rdx)` is the per-pad copy: src = the 0x44 records at exe+1D798F8
+    (Steam Input side), dst = the 0x24 records at exe+1E2C500 (src+4 → dst+0, 0x18 bytes). Earlier
+    notes calling 1E2C500 "raw" had the direction backwards. Blanking
+    the processed pad after the update is NOT enough (Snake kept moving: later copies come from
+    raw); the plugin hooks the per-pad copy and blanks the raw record before it runs.
 - **Snake's facing:** i16 at `control+0x42` (target copy at `+0x4A`), 65536 = full turn.
   Found by turning in place. Zero direction and handedness vs the Skate engine not yet matched.

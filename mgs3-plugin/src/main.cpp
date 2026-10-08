@@ -10,6 +10,7 @@
 
 #include <filesystem>
 
+#include "control.hpp"
 #include "game.hpp"
 #include "log.hpp"
 #include "skate.hpp"
@@ -61,6 +62,7 @@ DWORD WINAPI init(LPVOID) {
   for (int attempt = 0; attempt < 120 && !(found = game::init()); ++attempt) Sleep(1000);
   if (!found) return 0;
   skate::start(dir, ffi);
+  control::start(dir);
 
   // Log Snake's position whenever it moves by more than half a metre (to verify the lookup).
   game::Vec3 last{};

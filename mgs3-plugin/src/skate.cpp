@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <mutex>
 #include <fstream>
 #include <optional>
 #include <vector>
@@ -43,6 +45,16 @@ struct Ffi {
 using InstallGeomFn = int(__cdecl*)(MgskSession*, const char*, float);
 
 std::filesystem::path g_plugin_dir;
+
+// -1 none, 0 stop, 1 start: a pending request from the test harness.
+std::atomic<int> g_request{-1};
+std::mutex g_status_mutex;
+Status g_status;
+
+void set_status(const Status& s) {
+  std::lock_guard lock(g_status_mutex);
+  g_status = s;
+}
 HMODULE g_ffi_module = nullptr;
 
 template <typename T>
@@ -144,7 +156,7 @@ int16_t axis(uint8_t value, bool flip) {
   return static_cast<int16_t>(std::clamp(flip ? -v : v, -32768, 32767));
 }
 
-// The game's own pad state works for every controller Steam Input supports (the Steam Controller
+// The game's own pad state (captured by the pad hook before blanking) works for every controller Steam Input supports (the Steam Controller
 // isn't visible to XInput while the game uses Steam Input). A real XInput pad takes priority.
 MgskControls read_pad() {
   MgskControls c{};
@@ -160,8 +172,9 @@ MgskControls read_pad() {
     c.right[1] = g.sThumbRY;
     return c;
   }
-  const game::Pad* p = game::pad();
-  if (!p) return c;
+  game::Pad pad;
+  if (!game::pad(pad)) return c;
+  const game::Pad* p = &pad;
   for (const ButtonMap& b : kButtonMap) {
     if (p->buttons & b.ps2) c.buttons = static_cast<uint16_t>(c.buttons | b.xinput);
   }
@@ -231,18 +244,23 @@ DWORD WINAPI run(LPVOID) {
 
   bool skating = false;
   bool key_was_down = false;
+  Status st;
+  st.ready = true;
+  set_status(st);
   int ticks = 0;
   Clock clock(period);
   for (;;) {
     clock.wait();
     const bool key_down = (GetAsyncKeyState(kToggleKey) & 0x8000) != 0;
-    const bool toggled = key_down && !key_was_down;
+    const int remote = g_request.exchange(-1);
+    const bool toggled = (key_down && !key_was_down) || (remote == 1 && !skating) || (remote == 0 && skating);
     key_was_down = key_down;
 
     game::Vec3* snake = game::snake_position();
     if (toggled) {
       if (skating) {
         skating = false;
+        game::block_input(false);
         log("skate: off");
       } else if (!snake) {
         log("skate: no player to put on a board");
@@ -268,6 +286,7 @@ DWORD WINAPI run(LPVOID) {
             if (count >= 0) {
               world_ok = true;
               collision_stage = stage;
+              st.collision_triangles = count;
               log("skate: %s collision from %s: %d triangles in %lu ms", stage.c_str(),
                   geom->filename().string().c_str(), count, GetTickCount() - t0);
             } else {
@@ -281,20 +300,27 @@ DWORD WINAPI run(LPVOID) {
           const auto floor = flat_floor(x, y, z);
           world_ok = f.install_world(session, floor.data(), 2) == 0;
           collision_stage.clear();
+          st.collision_triangles = -1;
         }
         if (!world_ok || f.activate(session, at, heading)) {
           log("skate: start failed: %s", f.last_error());
         } else {
           skating = true;
+          game::block_input(true);
           ticks = 0;
           log("skate: on at %.1f %.1f %.1f (mm), Snake yaw %d -> heading %.1f deg", snake->x, snake->y, snake->z,
               yaw ? *yaw : 0, heading * 180.f / std::numbers::pi_v<float>);
         }
       }
     }
-    if (!skating) continue;
+    st.skating = skating;
+    if (!skating) {
+      set_status(st);
+      continue;
+    }
     if (!snake) {
       skating = false;
+      game::block_input(false);
       log("skate: player gone, off");
       continue;
     }
@@ -304,6 +330,7 @@ DWORD WINAPI run(LPVOID) {
     if (f.tick(session, &pad) || f.root(session, m)) {
       log("skate: engine error, off: %s", f.last_error());
       skating = false;
+      game::block_input(false);
       continue;
     }
     // Translation is the last column of the column-major root matrix.
@@ -314,6 +341,11 @@ DWORD WINAPI run(LPVOID) {
     const float heading = std::atan2(m[8], m[10]);
     if (int16_t* yaw = game::snake_yaw()) *yaw = headings.to_mgs(heading);
     if (int16_t* target = game::snake_target_yaw()) *target = headings.to_mgs(heading);
+    st.skater[0] = m[12];
+    st.skater[1] = m[13];
+    st.skater[2] = m[14];
+    st.heading_deg = heading * 180.f / std::numbers::pi_v<float>;
+    set_status(st);
     if (++ticks % 120 == 0) {
       log("skate: skater at %.2f %.2f %.2f (m) heading %.0f deg; pad buttons %04X left %d,%d right %d,%d", m[12], m[13], m[14],
           heading * 180.f / std::numbers::pi_v<float>, pad.buttons, pad.left[0], pad.left[1], pad.right[0], pad.right[1]);
@@ -322,6 +354,13 @@ DWORD WINAPI run(LPVOID) {
 }
 
 }  // namespace
+
+void request(bool on) { g_request = on ? 1 : 0; }
+
+Status status() {
+  std::lock_guard lock(g_status_mutex);
+  return g_status;
+}
 
 void start(const std::filesystem::path& plugin_dir, HMODULE ffi) {
   g_plugin_dir = plugin_dir;

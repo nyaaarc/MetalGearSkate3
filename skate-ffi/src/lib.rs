@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use skate_host::bridge::{Controls, Session};
 
+mod board;
 mod geom;
 
 static VERSION: &CStr = c"skate-ffi 0.1.0";
@@ -267,5 +268,80 @@ pub unsafe extern "C" fn mgsk_root(session: *const Session, out: *mut f32) -> i3
         let m = session.pose().root.to_cols_array();
         unsafe { std::ptr::copy_nonoverlapping(m.as_ptr(), out, 16) };
         Ok(0)
+    })
+}
+
+/// Writes the world transforms of up to `max_bodies` board parts (16 floats each,
+/// column-major) to `out`, in engine body order: right front, left front, right back and
+/// left back wheel, front truck, back truck, deck. Returns the count written, or -1.
+///
+/// # Safety
+/// `session` is a live session; `out` has room for `max_bodies * 16` floats (may be null
+/// when `max_bodies` is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_board_pose(session: *const Session, out: *mut f32, max_bodies: u32) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_ref() }.ok_or("null session")?;
+        let parts = session.board_parts();
+        let n = parts.len().min(max_bodies as usize);
+        if n > 0 {
+            if out.is_null() {
+                return Err("null out".into());
+            }
+            for (i, part) in parts[..n].iter().enumerate() {
+                unsafe { std::ptr::copy_nonoverlapping(part.to_cols_array().as_ptr(), out.add(i * 16), 16) };
+            }
+        }
+        count_i32(n)
+    })
+}
+
+/// Reads the skateboard part `body` (engine body order, as in `mgsk_board_pose`; 6 is the
+/// deck) from `assets_dir/private/skater.glb`, in that body's local frame, so drawing it with
+/// the body's transform places it. The deck part carries the deck and baseplates; each
+/// truck its hanger; each wheel itself. Triangles are `indices` triples, counter-clockwise
+/// seen from outside, on the engine's right-handed axes (+Y up, +Z to the nose).
+///
+/// Sets `*out_vertices` and `*out_indices` to the part's sizes, then copies the part only if
+/// both buffers are large enough. Returns 1 if copied, 0 if only the sizes were reported,
+/// -1 on failure. Parses the GLB on every call: load once, not per frame.
+///
+/// # Safety
+/// `assets_dir` is a NUL-terminated UTF-8 path; `vertices` has room for `max_vertices` and
+/// `indices` for `max_indices` (either may be null when its capacity is 0); `out_vertices`
+/// and `out_indices` are valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_board_mesh(
+    assets_dir: *const c_char,
+    body: u32,
+    vertices: *mut board::Vertex,
+    max_vertices: u32,
+    indices: *mut u16,
+    max_indices: u32,
+    out_vertices: *mut u32,
+    out_indices: *mut u32,
+) -> i32 {
+    guard(-1, || {
+        if out_vertices.is_null() || out_indices.is_null() {
+            return Err("null out".into());
+        }
+        let parts = board::load(&path_from(assets_dir)?)?;
+        let part = parts.get(body as usize).ok_or_else(|| format!("no board body {body}"))?;
+        let (nv, ni) = (part.vertices.len(), part.indices.len());
+        unsafe {
+            *out_vertices = nv as u32;
+            *out_indices = ni as u32;
+        }
+        if nv > max_vertices as usize || ni > max_indices as usize {
+            return Ok(0);
+        }
+        if vertices.is_null() || indices.is_null() {
+            return Err("null vertices or indices".into());
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(part.vertices.as_ptr(), vertices, nv);
+            std::ptr::copy_nonoverlapping(part.indices.as_ptr(), indices, ni);
+        }
+        Ok(1)
     })
 }

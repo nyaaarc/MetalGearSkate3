@@ -11,4 +11,7 @@ way [GTA San AnSkateas](https://github.com/ryglizzy/GTA-San-AnSkateas) vendors i
 | `docs/SKATE.md` | How the mashup uses the engine in IW4L |
 | `LICENSE`, `NOTICE` | The mashup's Apache-2.0 licence and notice, kept as required |
 
-Local changes: none yet. Record any change here, with the reason.
+Local changes (record each, with the reason):
+
+- `skate-host/src/physics/bridge.rs`: added `Session::board_parts()`, returning the seven board
+  part world transforms, so `skate-ffi` can export the board pose (the physics field is private).

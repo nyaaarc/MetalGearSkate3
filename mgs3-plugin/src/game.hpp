@@ -38,7 +38,17 @@ int16_t* snake_target_yaw();
 // Name of the loaded stage, e.g. "s091a", or nullptr before init. Empty in menus.
 const char* current_stage();
 
-// The game's processed state for pad 0 (what gameplay reads), or nullptr before init.
-const Pad* pad();
+// Pad 0 as the game read it this frame, captured before any blanking. False before the first
+// captured frame. Needs the pad hook (installed by init()).
+bool pad(Pad& out);
+
+// While true, the game's own view of pad 0 is blanked after each update (no buttons, sticks
+// centred), so Snake's movement code ignores the controller. The real state still reaches pad().
+void block_input(bool blocked);
+
+// Test harness: replace pad 0 with this state for the next `frames` game frames (before the
+// plugin reads it and before blocking), as if a controller were held. 0 frames cancels.
+void inject_pad(uint16_t buttons, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry, int frames);
+int injected_frames_left();
 
 }  // namespace game
