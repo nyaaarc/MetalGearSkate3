@@ -4,19 +4,42 @@ Skate 3 skating inside METAL GEAR SOLID 3 (Master Collection Vol.1, Steam). Snak
 on a board driven by the Skate 3 engine, riding MGS3's own stages and collision, with
 Skate 3's controls, tricks, grinds and bails.
 
-**No game files are included.** Setup will build what the mod needs from your own copies
-of both games.
+**No game files are included.** Setup builds what the mod needs from your own copies of both
+games.
 
-**Status: early.** Snake can skate on the genuine Skate 3 engine with the stage's real collision;
-no board or skating animation yet. See "What works" below.
+**Status: early but playable.** Snake skates on the genuine Skate 3 engine on MGS3's real stage
+collision: pushing, flip tricks, grinds and bails, posed from the skater, on a textured board,
+with the game's camera following. See "What works" below.
 
 ## What you need
 
 1. **METAL GEAR SOLID 3** from Master Collection Vol.1 on Steam (64-bit `METAL GEAR SOLID3.exe`).
-2. **Skate 3 for Xbox 360**, your own disc's ISO or Games on Demand copy, extracted to a
-   folder with `default.xex` and `data` in it (`extract-xiso -x "Skate 3.iso"`).
-3. **An ASI loader** in the MGS3 folder ([Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader)).
-4. **A controller.**
+2. **Skate 3 for Xbox 360**: your own disc image (`.iso`), or an extracted copy (a folder with
+   `default.xex` and `data`). A PS3 copy won't work.
+3. **A controller.**
+
+## Installing
+
+1. Download a release zip and unpack it anywhere (or build from source, below).
+2. Close the game and run `setup.cmd`. It:
+   - finds MGS3 through Steam (or asks for its folder);
+   - installs an ASI loader if there isn't one ([Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader)
+     v9.7.4 as `wininet.dll`; `-WithHDFix` installs [MGSHDFix](https://github.com/ShizCalev/MGSHDFix) 4.1.2 instead);
+   - copies `MetalGearSkate.asi` and `skate_ffi.dll` into the game's `plugins` folder;
+   - asks for your Skate 3 `.iso` (or folder, or `default.xex`), unpacks it with
+     [extract-xiso](https://github.com/XboxDev/extract-xiso) and converts the skate data from it with
+     the converter of [2010 Rust Rewrite Mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup)
+     v0.4.0, into `%LOCALAPPDATA%\MetalGearSkate` (about 180 MB; the 6 GB unpacked copy can be deleted after);
+   - writes `plugins\MetalGearSkate.ini` and, if Python is installed, rides the engine for 10 s to check it.
+
+   Every download is asked for first and pinned by version and SHA-256. Options:
+   `setup.cmd -DryRun` (show the actions only), `-Skate3 <path>`, `-GameDir <path>`, `-DataDir <path>`,
+   `-DataOnly` (only reconvert the Skate 3 data), `-SkipConvert`, `-Yes`.
+3. Start MGS3, load a stage (Groznyj Grad, `s091a`, from the developer menu's stage select is a
+   good one) and press **F5** to start or stop skating.
+
+Uninstall: delete `plugins\MetalGearSkate.asi`, `plugins\skate_ffi.dll` and `plugins\MetalGearSkate.ini`,
+and the `%LOCALAPPDATA%\MetalGearSkate` folder.
 
 ## Trying it (developers)
 
@@ -32,7 +55,8 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 | `mgs3-plugin/` | The game side: a C++ ASI plugin (`MetalGearSkate.asi`) loaded into MGS3 |
 | `skate-ffi/` | A 64-bit Rust DLL (`skate_ffi.dll`) wrapping the Skate engine in a C API |
 | `mashup/` | The Skate engine crates, taken from [2010 Rust Rewrite Mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup) at `f608f85` with its licence and notice |
-| `release/` | Player setup and the release packer (not written yet) |
+| `setup.cmd`, `tools/setup.ps1` | Player setup (above) |
+| `package.cmd`, `tools/package.ps1` | Builds the release zip in `dist\` (binaries, setup, README, licences; no game data) |
 | `docs/` | MGS3 format and reverse-engineering notes, dev log |
 
 ## Building from source
@@ -86,7 +110,9 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 - A stable lookup for the camera and skeleton
 - Snake's gear (separate model) still follows the game's own animation while skating
 - Board textures not yet checked in game (simple diffuse lighting, no specular)
-- Setup (finding MGS3, converting your Skate 3 files), settings menu, audio
+- Settings menu, audio
+- Setup is tested in dry runs and data-only runs (ISO → extract → convert → engine check); a full
+  install on a clean machine hasn't been tried yet
 
 ## Credits
 
@@ -98,6 +124,14 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
   [MGSHDFix](https://github.com/ShizCalev/MGSHDFix) by ShizCalev and contributors (MIT).
 - Grind rail finder (`skate-ffi/src/rails.rs`) ported from `render_anim/src/skate/rails.rs` in
   [2010 Rust Rewrite Mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup) by chasmlol (Apache-2.0).
+- Setup downloads, each under its own licence (kept beside the files it installs):
+  [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) by ThirteenAG (MIT),
+  [MGSHDFix](https://github.com/ShizCalev/MGSHDFix) (MIT, optional),
+  [extract-xiso](https://github.com/XboxDev/extract-xiso) (its `LICENSE.TXT`), and the Skate 3 data
+  converter from [2010 Rust Rewrite Mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup) v0.4.0
+  (Apache-2.0, with its NumPy, Pillow and Python licences).
+- Release zips also carry the licences of [safetyhook](https://github.com/cursey/safetyhook) (BSL-1.0),
+  Zydis/Zycore (MIT) and the Rust crates linked into `skate_ffi.dll` (`licenses/rust-crates.md`).
 - MGS3 format research: Jayveer, Joy-Division, GirianSeed and others; see `docs/formats.md`.
 
 ## License
