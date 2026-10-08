@@ -447,6 +447,7 @@ DWORD WINAPI run(LPVOID) {
     float at[3];
     float heading;
   } last_good{}, riding_spot{{}, NAN};
+  bool placed = false;  // the skater was just put somewhere: no speed from that jump
   Clock clock(period);
   for (;;) {
     clock.wait();
@@ -505,6 +506,7 @@ DWORD WINAPI run(LPVOID) {
           ticks = 0;
           last_good = {{at[0], at[1], at[2]}, heading};
           riding_spot = {{}, NAN};
+          placed = true;
           log("skate: on at %.1f %.1f %.1f (mm), Snake yaw %d -> heading %.1f deg", snake->x, snake->y, snake->z,
               yaw ? *yaw : 0, heading * 180.f / std::numbers::pi_v<float>);
         }
@@ -532,6 +534,7 @@ DWORD WINAPI run(LPVOID) {
       // Carry on from the last good spot on a fresh session, like a bail respawn.
       if (replace_session() && begin(last_good.at, last_good.heading)) {
         log("skate: resumed at %.2f %.2f %.2f (m)", last_good.at[0], last_good.at[1], last_good.at[2]);
+        placed = true;
         continue;
       }
       broken = true;
@@ -555,6 +558,7 @@ DWORD WINAPI run(LPVOID) {
         continue;
       }
       riding_spot = {{}, NAN};
+      placed = true;
     }
     // Translation is the last column of the column-major root matrix.
     snake->x = m[12] * kMmPerUnit;
@@ -574,7 +578,8 @@ DWORD WINAPI run(LPVOID) {
                  have_camera ? camera : nullptr);
     {
       const float dx = m[12] - st.skater[0], dz = m[14] - st.skater[2];
-      st.speed_mps = std::sqrt(dx * dx + dz * dz) / period;
+      st.speed_mps = placed ? 0.f : std::sqrt(dx * dx + dz * dz) / period;
+      placed = false;
       if (f.state(session, st.engine_state, sizeof(st.engine_state)) < 0) st.engine_state[0] = 0;  // returns name length
       note_recent(st.engine_state, m[13], st.speed_mps);
     }

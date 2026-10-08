@@ -55,6 +55,7 @@ The stage's real collision is loaded on F5; the board is drawn in flat colours, 
 - Skating in game: F5 hands Snake to the Skate 3 engine using the game's own pad state, so any
   Steam Input controller works. Checked in game (run 15, s091a): pushes build 2.7, 4.9, 7.6 m/s;
   ollie, kickflip, heelflip and nollie leave the ground (~1 m) and land; carving and braking work.
+  Grinds (50-50 into 5-0 on a ledge) and bails (wipeout, then the engine's respawn) work (run 16).
   Snake is posed from the skater on the board, and the board hides behind the scene and his legs.
 - Stage collision: `.geom` decoded (`tools/geom.py`, Rust `skate-ffi/src/geom.rs`, identical output);
   the current stage's collision is loaded into the engine on F5.
@@ -82,7 +83,6 @@ The stage's real collision is loaded on F5; the board is drawn in flat colours, 
 ## What's missing
 
 - A stable lookup for the camera and skeleton
-- Grinds and bails not yet confirmed in game
 - Snake's gear (separate model) still follows the game's own animation while skating
 - Drawing the board in game: flat colours only
 - Setup (finding MGS3, converting your Skate 3 files), settings menu, audio
