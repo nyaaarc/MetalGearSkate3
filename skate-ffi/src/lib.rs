@@ -438,6 +438,15 @@ pub unsafe extern "C" fn mgsk_audio_start(session: *mut Session, assets_dir: *co
     })
 }
 
+/// 1 when the session's sound is running (`mgsk_audio_start` succeeded), else 0.
+///
+/// # Safety
+/// `session` is a live session (or null).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_audio_running(session: *const Session) -> i32 {
+    i32::from(audio_outputs().contains_key(&(session as usize)))
+}
+
 /// The audio output rate (Hz): 48000.
 #[unsafe(no_mangle)]
 pub extern "C" fn mgsk_audio_rate() -> u32 {

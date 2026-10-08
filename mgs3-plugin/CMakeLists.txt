@@ -25,7 +25,7 @@ target_compile_definitions(MetalGearSkate PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX U
 target_compile_options(MetalGearSkate PRIVATE /W4 /permissive-)
 
 # The core: everything else, as MetalGearSkate.core.dll (installed as plugins\MetalGearSkate\core.dll).
-add_library(MetalGearSkateCore SHARED src/core.cpp src/camera.cpp src/control.cpp src/game.cpp src/hang.cpp
+add_library(MetalGearSkateCore SHARED src/core.cpp src/audio.cpp src/camera.cpp src/control.cpp src/game.cpp src/hang.cpp
             src/log.cpp src/pose.cpp src/render.cpp src/skate.cpp src/watch.cpp)
 set_target_properties(MetalGearSkateCore PROPERTIES OUTPUT_NAME "MetalGearSkate.core")
 # The C API the skate engine DLL exports.

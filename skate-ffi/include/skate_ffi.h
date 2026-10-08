@@ -89,6 +89,8 @@ int mgsk_tick(MgskSession* session, const MgskControls* controls);
  * (<assets_dir>/private/audio/audio_manifest.json). Ticked with the session from then on.
  * Returns the number of sound banks loaded, or -1. */
 int mgsk_audio_start(MgskSession* session, const char* assets_dir);
+/* 1 when the session's sound is running (mgsk_audio_start succeeded), else 0. */
+int mgsk_audio_running(const MgskSession* session);
 /* The audio output rate (Hz): 48000. */
 uint32_t mgsk_audio_rate(void);
 /* Renders frames of interleaved stereo (2 * frames floats, +-1) into out; silence without audio.

@@ -16,6 +16,7 @@
 #include <thread>
 
 #include "skate_ffi.h"
+#include "audio.hpp"
 #include "game.hpp"
 #include "log.hpp"
 #include "core_api.hpp"
@@ -399,6 +400,10 @@ DWORD WINAPI run(LPVOID) {
   g_shared->session = nullptr;
   if (!session) return 0;
   if (posing) log("skate: retargeting onto %s (mirror_x %d)", mdl.string().c_str(), mirror);
+  // The skater's sound (Skate 3's audio runtime in the DLL, from setup's audio export).
+  if (ini_string("audio", "1") != "0" && audio::start(g_ffi_module, std::stof(ini_string("audio_volume", "1")))) {
+    audio::use_session(session, data.c_str());
+  }
   Spare spare;
   auto prepare_spare = [&spare, make_session] { spare.prepare([make_session] { return make_session(nullptr); }); };
   if (g_shared->spare) {
@@ -478,6 +483,7 @@ DWORD WINAPI run(LPVOID) {
   auto replace_session = [&]() -> bool {
     MgskSession* fresh = spare.take();
     if (!fresh) return false;
+    audio::use_session(fresh, data.c_str());
     f.session_free(session);
     session = fresh;
     collision_stage.clear();  // a new session has only the flat floor
@@ -587,6 +593,7 @@ DWORD WINAPI run(LPVOID) {
     }
     st.skating = skating;
     game::engine_takes_injection(skating);
+    audio::set_playing(skating);
     if (skating != frozen) {
       if (skating) {
         game::freeze_snake(true);
@@ -826,6 +833,8 @@ void stop() {
     CloseHandle(g_thread);
     g_thread = nullptr;
   }
+  // The output thread (the session and its sound stay in the DLL for the next core).
+  audio::stop();
 }
 
 }  // namespace skate
