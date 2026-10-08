@@ -141,7 +141,11 @@ void __fastcall on_pad_copy(uint8_t* dst, uint8_t* src) {
   if (src == g_pads) {  // pad 0
     {
       std::lock_guard lock(g_pad_mutex);
-      if (g_pending_stage[0]) {
+      // Only from the developer menu or a gameplay stage: a load during boot ("init", "title")
+      // hangs the game in its script interpreter. Until then the request waits.
+      const char* stage = current_stage();
+      const bool can_load = stage && stage[0] && strcmp(stage, "init") != 0 && strcmp(stage, "title") != 0;
+      if (g_pending_stage[0] && can_load) {
         load_stage_now(g_pending_stage);
         g_pending_stage[0] = 0;
       }
@@ -330,6 +334,65 @@ Vec3* snake_position() {
 int16_t* snake_yaw() {
   if (!g_snake_control || !*g_snake_control) return nullptr;
   return reinterpret_cast<int16_t*>(*g_snake_control + kSnakeYawOffset);
+}
+
+namespace {
+// Snake's actor work around his control block (MC 3.0.0, docs/formats.md "Snake's actor"): the
+// actor header's update function pointer sits 0x118 before the control block and his render
+// object 0x970 after it; the object's bounding box max/min (float3 each) at +0x120/+0x130 and
+// bounding radius at +0x14C (1253 mm for sna_def), bone count at +0xB0.
+constexpr ptrdiff_t kActorUpdateSlot = -0x118;
+constexpr size_t kRenderObject = 0x970, kBoundsMax = 0x120, kBoundsMin = 0x130, kBoundsRadius = 0x14C,
+                 kObjBoneCount = 0xB0;
+constexpr float kHugeBoundsMm = 1.0e7f;
+
+void __fastcall frozen_update(void*) {}
+
+struct Frozen {
+  uint8_t* control = nullptr;
+  void* update = nullptr;     // the actor's own update, put back on unfreeze
+  uint8_t bounds[0x30] = {};  // +0x120..+0x14F as they were
+} g_frozen;
+}  // namespace
+
+bool freeze_snake(bool frozen) {
+  uint8_t* control = (g_snake_control && *g_snake_control) ? *g_snake_control : nullptr;
+  if (!frozen) {
+    if (!g_frozen.control) return true;
+    // Only touch the actor we froze, and only if it is still the player's.
+    if (control == g_frozen.control) {
+      memcpy(control + kActorUpdateSlot, &g_frozen.update, sizeof(void*));
+      memcpy(control + kRenderObject + kBoundsMax, g_frozen.bounds, sizeof(g_frozen.bounds));
+    }
+    g_frozen = {};
+    return true;
+  }
+  if (g_frozen.control) return g_frozen.control == control;
+  if (!control) return false;
+  void* update = nullptr;
+  memcpy(&update, control + kActorUpdateSlot, sizeof(update));
+  const auto* exe = reinterpret_cast<const uint8_t*>(GetModuleHandleW(nullptr));
+  int bones = 0;
+  memcpy(&bones, control + kRenderObject + kObjBoneCount, sizeof(bones));
+  float radius = 0;
+  memcpy(&radius, control + kRenderObject + kBoundsRadius, sizeof(radius));
+  const bool update_in_exe = update >= exe && update < exe + 0x2000000;
+  if (!update_in_exe || bones != 57 || !(radius > 100.f && radius < 10000.f)) {
+    log("game: Snake's actor isn't laid out as expected (update %p, bones %d, radius %.0f); not frozen", update,
+        bones, radius);
+    return false;
+  }
+  g_frozen.control = control;
+  g_frozen.update = update;
+  memcpy(g_frozen.bounds, control + kRenderObject + kBoundsMax, sizeof(g_frozen.bounds));
+  void* stub = reinterpret_cast<void*>(&frozen_update);
+  memcpy(control + kActorUpdateSlot, &stub, sizeof(stub));
+  const float huge_max[3] = {kHugeBoundsMm, kHugeBoundsMm, kHugeBoundsMm};
+  const float huge_min[3] = {-kHugeBoundsMm, -kHugeBoundsMm, -kHugeBoundsMm};
+  memcpy(control + kRenderObject + kBoundsMax, huge_max, sizeof(huge_max));
+  memcpy(control + kRenderObject + kBoundsMin, huge_min, sizeof(huge_min));
+  memcpy(control + kRenderObject + kBoundsRadius, &kHugeBoundsMm, sizeof(float));
+  return true;
 }
 
 int16_t* snake_target_yaw() {

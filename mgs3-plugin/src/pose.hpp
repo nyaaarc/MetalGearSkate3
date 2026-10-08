@@ -45,6 +45,8 @@ struct Stats {
   uint64_t applied = 0;   // palette slots rewritten (renderer)
   int last_count = 0;     // bone count of the last object seen
   float nearest_mm = -1;  // closest 57-bone object to Snake since the last call (-1 = none)
+  float nearest_at[3] = {};          // that object's translation (obj+0x50, as stored)
+  const void* nearest_obj = nullptr;  // and its address
   int relative = -1;      // bones stored relative to the render origin (1) or world (0), -1 unknown
   uint64_t draws = 0;     // Snake skinned draws seen by the renderer
 };

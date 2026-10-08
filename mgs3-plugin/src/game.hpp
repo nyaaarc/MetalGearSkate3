@@ -36,6 +36,13 @@ Vec3* snake_position();
 int16_t* snake_yaw();
 int16_t* snake_target_yaw();
 
+// Hand Snake's actor over while skating (true) or back to the game (false); idempotent. Frozen,
+// his own per-frame update is skipped (no gravity, fall death, auto-run or input; we write his
+// position) and his render object's bounds are made huge so it is never culled (it stays where
+// he started; the renderer poses his mesh relative to it). False if his actor isn't laid out
+// as expected (then nothing is changed).
+bool freeze_snake(bool frozen);
+
 // The game camera's eye and look-at points (mm, y up), read from the static camera object at
 // exe+1D39D80 (MC 3.0.0 only; no signature yet). False when they don't look like positions.
 bool camera(Vec3& eye, Vec3& look_at);

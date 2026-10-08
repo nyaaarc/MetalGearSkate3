@@ -465,6 +465,14 @@ DWORD WINAPI run(LPVOID) {
   float written_y = NAN;  // Snake's y as we last wrote it (mm)
   int game_falling = 0;   // ticks in a row the game moved Snake down between our writes
   Spot game_safe{};       // the last spot the game left Snake standing, for respawns and skate off
+  // Snake's actor is frozen while skating (game::freeze_snake). Where he got on the board, and
+  // for a moment after skate off, a watch: if the game then drops him (no floor of its own
+  // there, e.g. s091a's out-of-bounds strip), he goes back to where he got on.
+  bool frozen = false;
+  game::Vec3 entry{};
+  int watch_ticks = 0;
+  float watch_y = 0;    // his height at skate off
+  int hold_ticks = 0;   // holding him on the entry spot while the game lands him there
   Clock clock(period);
   for (;;) {
     clock.wait();
@@ -505,6 +513,8 @@ DWORD WINAPI run(LPVOID) {
           start = g_start_at;
           g_start_at.set = false;
         }
+        // Where he stood when he got on (before any harness placement): ground the game holds.
+        if (!frozen) entry = *snake;
         if (start.set) {
           // Place Snake first so the game's own state agrees with where the board goes down.
           *snake = {start.x, start.y, start.z};
@@ -540,6 +550,33 @@ DWORD WINAPI run(LPVOID) {
       }
     }
     st.skating = skating;
+    if (skating != frozen) {
+      if (skating) {
+        game::freeze_snake(true);
+      } else {
+        game::freeze_snake(false);
+        watch_ticks = 30;
+        hold_ticks = 0;
+        if (snake) watch_y = snake->y;
+      }
+      frozen = skating;
+    }
+    // Caught early (any real drop in the first half second): once a fall has built up, MGS3
+    // kills him even after he's moved onto solid ground.
+    constexpr float kOffDropMm = 40.f;
+    if (!skating && watch_ticks > 0 && snake) {
+      --watch_ticks;
+      if (watch_y - snake->y > kOffDropMm) {
+        log("skate: the game is dropping Snake after skate off; back to where he got on (%.0f %.0f %.0f mm)",
+            entry.x, entry.y, entry.z);
+        watch_ticks = 0;
+        hold_ticks = 30;
+      }
+    }
+    if (!skating && hold_ticks > 0 && snake) {
+      --hold_ticks;
+      *snake = entry;
+    }
     if (!skating) {
       publish_pose(nullptr);
       set_status(st);
@@ -584,7 +621,8 @@ DWORD WINAPI run(LPVOID) {
       // The spot he'd go back to is off the stage too (e.g. a start placed outside it): stop
       // rather than respawn there forever.
       log("skate: no floor at %.2f %.2f %.2f either; off", last_good.at[0], last_good.at[1], last_good.at[2]);
-      g_request = 0;
+      int expected = -1;
+      g_request.compare_exchange_strong(expected, 0);  // a pending harness re-place wins
     } else if (off_stage || m[13] < last_good.at[1] - kFallLimit) {
       log("skate: left the stage at %.2f %.2f %.2f (floor %s); back to %.2f %.2f %.2f (m)", m[12], m[13], m[14],
           floor_found == 1 ? "far below" : "none", last_good.at[0], last_good.at[1], last_good.at[2]);
@@ -646,6 +684,8 @@ DWORD WINAPI run(LPVOID) {
       log("skate: pose hook calls %llu, palette slots posed %llu in %llu Snake draws, last bone count %d, nearest "
           "57-bone object %.0f mm, relative %d",
           ps.calls, ps.applied, ps.draws, ps.last_count, ps.nearest_mm, ps.relative);
+      log("skate: nearest 57-bone object %p at %.0f %.0f %.0f (mm)", ps.nearest_obj, ps.nearest_at[0],
+          ps.nearest_at[1], ps.nearest_at[2]);
       log("skate: skater at %.2f %.2f %.2f (m) heading %.0f deg; pad buttons %04X left %d,%d right %d,%d", m[12], m[13], m[14],
           heading * 180.f / std::numbers::pi_v<float>, pad.buttons, pad.left[0], pad.left[1], pad.right[0], pad.right[1]);
     }

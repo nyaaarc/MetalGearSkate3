@@ -52,6 +52,8 @@ bool render_origin(float out[3]) {
 }
 
 std::atomic<float> g_nearest_mm{-1.f};  // closest 57-bone object to Snake this frame (diagnostics)
+float g_nearest_at[3] = {0, 0, 0};       // its translation (diagnostics, racy by design)
+const void* g_nearest_obj = nullptr;
 std::atomic<int> g_relative{-1};        // 1 = bones stored relative to the render origin, 0 = world
 
 // Snake's render object sits on his gameplay position. Its translation may be stored in world
@@ -69,7 +71,11 @@ bool is_snake(const uint8_t* obj, const float origin[3], bool& relative) {
   relative = rel < world;
   const float best = relative ? rel : world;
   const float nearest = g_nearest_mm.load(std::memory_order_relaxed);
-  if (nearest < 0 || std::sqrt(best) < nearest) g_nearest_mm.store(std::sqrt(best), std::memory_order_relaxed);
+  if (nearest < 0 || std::sqrt(best) < nearest) {
+    g_nearest_mm.store(std::sqrt(best), std::memory_order_relaxed);
+    memcpy(g_nearest_at, t, sizeof(t));
+    g_nearest_obj = obj;
+  }
   return best < kMaxDistanceMm * kMaxDistanceMm;
 }
 
@@ -167,6 +173,8 @@ Stats stats() {
   s.applied = g_applied.load();
   s.last_count = g_last_count.load();
   s.nearest_mm = g_nearest_mm.exchange(-1.f);
+  memcpy(s.nearest_at, g_nearest_at, sizeof(s.nearest_at));
+  s.nearest_obj = g_nearest_obj;
   s.relative = g_relative.load();
   s.draws = g_draws.load();
   return s;

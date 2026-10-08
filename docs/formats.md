@@ -188,6 +188,24 @@ analogues to find, guided by the MGS2 patterns and the GirianSeed decomp.
   - `48 8B 05 ?? ?? ?? ?? 0F BF 4B F8 0F BF 50 42 E8` (disp at +3) → `exe+1E16CD8`,
     pointer to Snake's movement block (`pos-0x10`). The plugin uses this one (`game.cpp`).
 
+### Snake's actor (frozen while skating)
+
+- His control block (pointer at `exe+1E16CD8`) sits inside his actor work. The actor header's
+  update function pointer is at control **-0x118** (`exe+3304F0`; shutdown at -0x100,
+  `exe+330690`, frees sub-objects at +0xF0/+0x100/+0x2B0 of the work).
+- His render object is at control **+0x970**: world matrix +0x20 (translation +0x50), bone
+  count +0xB0 (57), bones pointer +0xC0, bounding box max/min float3 at **+0x120/+0x130** and
+  bounding radius at **+0x14C** (1253 mm). Control +0x30 holds an older position (the trench
+  point after the s091a auto-run), not his current one.
+- Off the game's own floor his actor keeps falling between our position writes: the render
+  object drifts away from his position and, after an edge event, settles ~0.74 m low and stops
+  following; far from the camera it is culled (he vanishes) and the game eventually kills him.
+- While skating the plugin swaps the update pointer for a no-op (`game::freeze_snake`) and
+  sets the bounds to ±1e7 mm so the frozen object is never culled; his mesh is posed relative
+  to that object wherever it is. Both are restored on skate off.
+- A stage load during boot (stage `init`/`title`) hangs the game in its script interpreter
+  (`exe+E5xxx`/`E60D9` recursion): `request_stage` now waits for `select` or a stage.
+
 ### Stage loading (how the developer menu does it)
 
 - `GM_SetArea(int id, const char* name)`: `id` is `StrCode` (24-bit rotate-5-and-add) of the
