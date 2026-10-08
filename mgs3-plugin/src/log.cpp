@@ -13,6 +13,10 @@ std::mutex g_mutex;
 
 void log_open(const std::filesystem::path& path) {
   std::lock_guard lock(g_mutex);
+  // Keep the previous session's log (e.g. one that ended in a hang) as <name>.prev.log.
+  std::error_code ignored;
+  std::filesystem::copy_file(path, std::filesystem::path(path).replace_extension(L".prev.log"),
+                             std::filesystem::copy_options::overwrite_existing, ignored);
   // Shared so the log can be read while the game runs.
   g_file = _wfsopen(path.c_str(), L"w", _SH_DENYNO);
 }

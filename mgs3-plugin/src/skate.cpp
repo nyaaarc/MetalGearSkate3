@@ -39,6 +39,12 @@ constexpr float kFallLimit = 3.f;
 constexpr float kMaxDrop = 4.f;
 // The floor is looked for below this far above the root: in a wipeout the root sinks ~0.7 m into it.
 constexpr float kFloorProbe = 1.5f;
+// MGS3 runs its own gravity on Snake between our writes wherever *its* collision has no floor
+// under him, which can differ from the .geom the skater rides. A drop of more than this (mm)
+// between two writes means the game has him falling; this many ticks of it while the engine
+// says the skater is on the ground means the game won't hold him there.
+constexpr float kGameDropMm = 20.f;
+constexpr int kGameFallTicks = 45;
 
 struct Ffi {
   decltype(&mgsk_session_new) session_new;
@@ -448,6 +454,9 @@ DWORD WINAPI run(LPVOID) {
     float heading;
   } last_good{}, riding_spot{{}, NAN};
   bool placed = false;  // the skater was just put somewhere: no speed from that jump
+  float written_y = NAN;  // Snake's y as we last wrote it (mm)
+  int game_falling = 0;   // ticks in a row the game moved Snake down between our writes
+  Spot game_safe{};       // the last spot the game left Snake standing, for respawns and skate off
   Clock clock(period);
   for (;;) {
     clock.wait();
@@ -468,6 +477,13 @@ DWORD WINAPI run(LPVOID) {
     if (toggled) {
       if (skating) {
         skating = false;
+        if (game_falling > 5) {
+          // Hand Snake back where the game's own floor holds him, or he falls (to his death).
+          *snake = {game_safe.at[0] * kMmPerUnit, game_safe.at[1] * kMmPerUnit + kSnakeHeightMm,
+                    game_safe.at[2] * kMmPerUnit};
+          log("skate: no game floor under Snake; handing him back at %.2f %.2f %.2f (m)", game_safe.at[0],
+              game_safe.at[1], game_safe.at[2]);
+        }
         game::block_input(false);
         pose::publish(nullptr);
       stealth.end();
@@ -507,6 +523,9 @@ DWORD WINAPI run(LPVOID) {
           last_good = {{at[0], at[1], at[2]}, heading};
           riding_spot = {{}, NAN};
           placed = true;
+          written_y = NAN;
+          game_falling = 0;
+          game_safe = last_good;
           log("skate: on at %.1f %.1f %.1f (mm), Snake yaw %d -> heading %.1f deg", snake->x, snake->y, snake->z,
               yaw ? *yaw : 0, heading * 180.f / std::numbers::pi_v<float>);
         }
@@ -560,10 +579,29 @@ DWORD WINAPI run(LPVOID) {
       riding_spot = {{}, NAN};
       placed = true;
     }
+    if (!std::isnan(written_y)) {
+      if (written_y - snake->y > kGameDropMm) {
+        ++game_falling;
+      } else {
+        game_falling = 0;
+        game_safe = {{st.skater[0], st.skater[1], st.skater[2]}, st.heading_deg * std::numbers::pi_v<float> / 180.f};
+      }
+    }
+    if (game_falling > kGameFallTicks && strstr(st.engine_state, "Ground")) {
+      log("skate: the game has no floor for Snake at %.2f %.2f %.2f; back to %.2f %.2f %.2f (m)", m[12], m[13], m[14],
+          game_safe.at[0], game_safe.at[1], game_safe.at[2]);
+      if (f.activate(session, game_safe.at, game_safe.heading) || f.root(session, m)) {
+        log("skate: respawn failed: %s", f.last_error());
+        continue;
+      }
+      game_falling = 0;
+      placed = true;
+    }
     // Translation is the last column of the column-major root matrix.
     snake->x = m[12] * kMmPerUnit;
     snake->y = m[13] * kMmPerUnit + kSnakeHeightMm;
     snake->z = m[14] * kMmPerUnit;
+    written_y = snake->y;
     // Face Snake along the skater: the root's local +Z axis (third column) is its forward.
     const float heading = std::atan2(m[8], m[10]);
     if (int16_t* yaw = game::snake_yaw()) *yaw = headings.to_mgs(heading);
