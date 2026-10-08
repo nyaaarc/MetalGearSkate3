@@ -1001,6 +1001,8 @@ void pick_scene_depth() {
   }
 }
 
+void reselect_snapshot();
+
 // Notes the frame's look-at point L from its first stage draw. Caller holds g_cap_mutex.
 void note_look_at(const uint8_t* globals) {
   Mat pers;
@@ -1016,6 +1018,7 @@ void note_look_at(const uint8_t* globals) {
       const Vec gap = g_L_frame - g_L_extrap;
       g_L_error_mm = std::sqrt(dot(gap, gap));
     }
+    reselect_snapshot();
   }
 }
 
@@ -1208,6 +1211,7 @@ struct SkinFrame {
   // Diagnostics for `render metrics` (counted every frame; cheap).
   uint64_t tick = 0;          // the published pose this frame was posed from
   float snap_error_mm = -1;   // |chosen camera placement's eye - L| (0 when it is the frame's camera)
+  bool snap_provisional = false;  // chosen with an extrapolated L (re-chosen once L is seen)
   int near_draws = 0;         // skinned draws on or near him (origin within 2 m)
   int missed_draws = 0;       // near draws with none posed but slots close to his game bones
   int partial_draws = 0;      // posed draws that also kept slots close to his game bones
@@ -1494,6 +1498,7 @@ bool pose_snake(uint8_t* globals) {
     float objects[pose::kBoneHistory][16];
     // Pose from the camera placement this frame is drawn with (its eye is the frame's L).
     const float L[3] = {g_L_frame.x, g_L_frame.y, g_L_frame.z};
+    g_skin.snap_provisional = !g_L_known;
     g_skin.have_board = camera::frame_pose_at(L, g_skin.board, g_skin.ours, g_skin.tick, g_skin.snap_error_mm) ||
                         skate::tick_pose(g_skin.board, g_skin.ours, &g_skin.tick);
     const bool have_ours = g_skin.have_board || pose::current(g_skin.ours);
@@ -1594,6 +1599,25 @@ bool pose_snake(uint8_t* globals) {
   if (early) ++g_skin.early_posed;
   ++g_skin.draws;
   return true;
+}
+
+// When the frame's posing started before its L was seen (another skinned draw, e.g. a guard, came
+// before the first stage draw), the camera placement was picked with an extrapolated L, which is
+// off while the camera swings: pick again with the real L. Caller holds g_cap_mutex.
+void reselect_snapshot() {
+  if (g_skin.state != 1 || !g_skin.snap_provisional) return;
+  g_skin.snap_provisional = false;
+  const float L[3] = {g_L_frame.x, g_L_frame.y, g_L_frame.z};
+  float board[skate::kBoardBodies * 16], ours[kSnakeBones * 16];
+  uint64_t tick = 0;
+  float error = -1;
+  if (camera::frame_pose_at(L, board, ours, tick, error)) {
+    memcpy(g_skin.board, board, sizeof(board));
+    memcpy(g_skin.ours, ours, sizeof(ours));
+    g_skin.tick = tick;
+    g_skin.snap_error_mm = error;
+    g_skin.have_board = true;
+  }
 }
 
 // One metrics row at the end of a frame; writes the CSV when the run is done. Caller holds
@@ -1730,6 +1754,7 @@ void end_skin_frame() {
   g_L_extrapolated = false;
   g_skin.tick = 0;
   g_skin.snap_error_mm = -1;
+  g_skin.snap_provisional = false;
 }
 
 HRESULT STDMETHODCALLTYPE on_map(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub, D3D11_MAP type, UINT flags,
