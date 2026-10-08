@@ -8,8 +8,9 @@ builds the Skate 3 data it needs from the player's own Xbox 360 copy. Run it thr
 
 Nothing from either game is downloaded or bundled. Downloads (each asked for, pinned by version
 and SHA-256): Ultimate ASI Loader (MIT), optionally MGSHDFix (MIT), extract-xiso (BSD-style),
-and the Skate 3 data converter from 2010 Rust Rewrite Mashup v0.4.0 (Apache-2.0; it runs the
-GPL-3.0 skate-3-rust-engine tools on your own default.xex).
+the Skate 3 data converter from 2010 Rust Rewrite Mashup v0.4.0 (Apache-2.0; it runs the
+GPL-3.0 skate-3-rust-engine tools on your own default.xex) and, for the skater's sound,
+vgmstream r2117 (ISC). The sound export runs with Python 3 and numpy when they are installed.
 #>
 param(
     [string]$GameDir,        # MGS3 folder (with "METAL GEAR SOLID3.exe"); found through Steam if omitted
@@ -36,6 +37,9 @@ $Downloads = @{
                    Sha256 = 'fc891dfa72f08e3838a2f8b7ec34a8e4d61678da1cc8fee879677f00bf114ce3' }
     Converter = @{ Url = 'https://github.com/chasmlol/2010-rust-rewrite-mashup/releases/download/v0.4.0/2010-Rust-Rewrite-Mashup-windows-x64.zip'
                    Sha256 = 'f7c02cfb4dd5650be29762947a0b17d3e6f9b9f1259025ee89a99bd031e1ebca' }
+    # Decodes the disc's EA-XMA sounds for the skater's audio (the pin upstream's audio export uses).
+    Vgmstream = @{ Url = 'https://github.com/vgmstream/vgmstream/releases/download/r2117/vgmstream-win64.zip'
+                   Sha256 = '6c4a8a3813864fefed081bbd337dbc0ad93bf88e0b92f5db98d7ab258b22dc6c' }
 }
 # Loaders Ultimate ASI Loader is commonly installed as; any of these means one is present.
 $LoaderNames = @('wininet.dll', 'winhttp.dll', 'dinput8.dll', 'version.dll', 'winmm.dll', 'dsound.dll', 'd3d11.dll', 'dxgi.dll')
@@ -238,6 +242,30 @@ if ($SkipConvert -or ($haveData -and -not $Skate3)) {
     Act "convert $xex -> $SkateData (a few minutes)" {
         & $converter --xex $xex --out $SkateData
         if ($LASTEXITCODE -ne 0) { Fail 'the converter failed (see its output above).' }
+    }
+
+    # The skater's sound: the disc's own sound banks, decoded (tools\skate_audio_export).
+    $disc = Split-Path -Parent $xex
+    $export = @((Join-Path $Here 'skate_audio_export\run.py'), (Join-Path $Repo 'tools\skate_audio_export\run.py')) |
+        Where-Object { Test-Path $_ } | Select-Object -First 1
+    $py = Get-Command python -ErrorAction SilentlyContinue
+    $numpy = $false
+    if ($py) { & python -c 'import numpy' 2>$null; $numpy = $LASTEXITCODE -eq 0 }
+    if (-not $export) {
+        Say '  (no audio exporter in this copy; skating will be silent)'
+    } elseif (-not ($py -and $numpy)) {
+        Say '  (Python 3 with numpy is needed for the skater''s sound; install them and rerun setup with -Skate3 to add it)'
+    } elseif (Ask 'Export the skater''s sounds from your disc (downloads vgmstream r2117 to decode them; about 1.3 GB, a few minutes)?') {
+        $vgm = Join-Path $Tools 'vgmstream\vgmstream-cli.exe'
+        if (-not (Test-Path $vgm)) {
+            $zip = Join-Path $Cache 'vgmstream-win64-r2117.zip'
+            Get-Pinned 'Vgmstream' $zip
+            Act "unpack vgmstream into $Tools\vgmstream" { Expand-Archive -Force -Path $zip -DestinationPath (Join-Path $Tools 'vgmstream') }
+        }
+        Act "export the skater's sounds from $disc -> $assets\private\audio" {
+            & python -I $export $disc $assets $vgm
+            if ($LASTEXITCODE -ne 0) { Say '  the sound export failed (see above); skating works, silently.' }
+        }
     }
     if ($extracted -and (Test-Path $extracted) -and (Ask "Delete the extracted disc copy in $extracted (about 6 GB; not needed any more)?")) {
         Act "delete $extracted" { Remove-Item -Recurse -Force $extracted }

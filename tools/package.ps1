@@ -28,6 +28,8 @@ New-Item -ItemType Directory -Force $stage, "$stage\licenses" | Out-Null
 Copy-Item $asi, $core, $dll $stage
 Copy-Item (Join-Path $Repo 'setup.cmd'), (Join-Path $Repo 'tools\setup.ps1'), (Join-Path $Repo 'tools\ffi_smoke.py') $stage
 Copy-Item (Join-Path $Repo 'mgs3-plugin\MetalGearSkate.example.ini') $stage
+# The skater's sound export (setup runs it; carries its own licence notices).
+Copy-Item -Recurse (Join-Path $Repo 'tools\skate_audio_export') $stage -Exclude '__pycache__'
 Copy-Item (Join-Path $Repo 'README.md'), (Join-Path $Repo 'LICENSE') $stage
 
 # Licences of what is inside the two binaries.
