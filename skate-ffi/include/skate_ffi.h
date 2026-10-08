@@ -82,8 +82,18 @@ int mgsk_geom_triangles(const char* geom_path, float* out, uint32_t capacity);
 float mgsk_period(const MgskSession* session);
 /* Puts the skater on the board at position (3 floats) facing heading radians. */
 int mgsk_activate(MgskSession* session, const float* position, float heading);
-/* Advances one engine tick with this controller state. */
+/* Advances one engine tick with this controller state (and, after mgsk_audio_start, one pass of
+ * the skater's sound). */
 int mgsk_tick(MgskSession* session, const MgskControls* controls);
+/* Starts the skater's sound: Skate 3's own audio runtime, from the converted data's audio export
+ * (<assets_dir>/private/audio/audio_manifest.json). Ticked with the session from then on.
+ * Returns the number of sound banks loaded, or -1. */
+int mgsk_audio_start(MgskSession* session, const char* assets_dir);
+/* The audio output rate (Hz): 48000. */
+uint32_t mgsk_audio_rate(void);
+/* Renders frames of interleaved stereo (2 * frames floats, +-1) into out; silence without audio.
+ * Safe from an output thread while the engine ticks on another. 0 on success, -1 on failure. */
+int mgsk_audio_render(const MgskSession* session, float* out, uint32_t frames);
 /* Writes the skater root transform (16 floats, column-major). */
 int mgsk_root(const MgskSession* session, float* out);
 /* Number of skater bones (36 with the stock skater: body, board and *_REPARENTED helpers), or -1. */

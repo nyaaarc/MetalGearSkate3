@@ -12,6 +12,7 @@ use std::sync::Mutex;
 
 use skate_host::bridge::{Controls, Session};
 
+mod audio;
 mod board;
 mod png;
 mod floor;
@@ -42,6 +43,27 @@ static FLOORS: Mutex<std::collections::BTreeMap<usize, floor::Floor>> = Mutex::n
 
 fn floors() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<usize, floor::Floor>> {
     FLOORS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A session's sound (`mgsk_audio_start`): the per-tick observer and the audio host.
+struct SessionAudio {
+    observer: skate_host::audio_state::AudioObserver,
+    host: audio::host::AudioHost,
+}
+
+/// Audio hosts by session address (the engine thread's side: observed and ticked in `mgsk_tick`).
+static AUDIO: Mutex<std::collections::BTreeMap<usize, SessionAudio>> = Mutex::new(std::collections::BTreeMap::new());
+/// Their runtimes by session address (the output thread's side, `mgsk_audio_render`): taken out
+/// so rendering only holds the runtime's own lock.
+static AUDIO_OUT: Mutex<std::collections::BTreeMap<usize, std::sync::Arc<std::sync::Mutex<skate_audio::runtime::Runtime>>>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+fn audio_hosts() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<usize, SessionAudio>> {
+    AUDIO.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn audio_outputs() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<usize, std::sync::Arc<std::sync::Mutex<skate_audio::runtime::Runtime>>>> {
+    AUDIO_OUT.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn rail_counts() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<usize, i32>> {
@@ -135,6 +157,8 @@ pub unsafe extern "C" fn mgsk_session_free(session: *mut Session) {
             extras().remove(&(session as usize));
             rail_counts().remove(&(session as usize));
             floors().remove(&(session as usize));
+            audio_outputs().remove(&(session as usize));
+            audio_hosts().remove(&(session as usize));
             drop(unsafe { Box::from_raw(session) });
             Ok(())
         });
@@ -359,6 +383,11 @@ pub unsafe extern "C" fn mgsk_activate(session: *mut Session, position: *const f
         }
         let p = unsafe { [*position, *position.add(1), *position.add(2)] };
         session.activate(p, heading)?;
+        // A teleport: no seam interpolation, edges or camera velocity across it.
+        if let Some(a) = audio_hosts().get_mut(&(std::ptr::from_mut(session) as usize)) {
+            a.observer.reset();
+            a.host.cut();
+        }
         Ok(0)
     })
 }
@@ -378,6 +407,61 @@ pub unsafe extern "C" fn mgsk_tick(session: *mut Session, controls: *const MgskC
             left: c.left,
             right: c.right,
         })?;
+        // The tick's sound: observe the skater, then one audio host pass (listener: the chase
+        // camera, engine units).
+        if let Some(a) = audio_hosts().get_mut(&(std::ptr::from_mut(session) as usize)) {
+            let riding = session.audio_observe(&mut a.observer);
+            let listener = session.pose().camera.map(|(position, basis, _)| (position.to_array(), basis.z_axis.to_array()));
+            a.host.tick(&riding, listener);
+        }
+        Ok(0)
+    })
+}
+
+/// Starts the skater's sound for a session from the converted data's audio export
+/// (`<assets_dir>/private/audio/audio_manifest.json`): Skate 3's own audio runtime, ticked with
+/// the session from then on. Returns the number of sound banks loaded, or -1 (`mgsk_last_error`).
+///
+/// # Safety
+/// `session` is a live session; `assets_dir` is a NUL-terminated path.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_audio_start(session: *mut Session, assets_dir: *const c_char) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_mut() }.ok_or("null session")?;
+        let root = path_from(assets_dir)?;
+        let host = audio::host::AudioHost::start(&root)?;
+        let banks = count_i32(host.started.banks)?;
+        let key = std::ptr::from_mut(session) as usize;
+        audio_outputs().insert(key, host.shared.clone());
+        audio_hosts().insert(key, SessionAudio { observer: Default::default(), host });
+        Ok(banks)
+    })
+}
+
+/// The audio output rate (Hz): 48000.
+#[unsafe(no_mangle)]
+pub extern "C" fn mgsk_audio_rate() -> u32 {
+    skate_audio::MIX_RATE
+}
+
+/// Renders `frames` frames of interleaved stereo (`2 * frames` floats, 48 kHz, ±1) into `out`.
+/// Silence when the session has no audio. Safe to call from an output thread while the engine
+/// ticks on another. 0 on success, -1 on failure.
+///
+/// # Safety
+/// `out` has room for `2 * frames` floats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_audio_render(session: *const Session, out: *mut f32, frames: u32) -> i32 {
+    guard(-1, || {
+        if out.is_null() {
+            return Err("null out".into());
+        }
+        let out = unsafe { std::slice::from_raw_parts_mut(out, frames as usize * 2) };
+        let shared = audio_outputs().get(&(session as usize)).cloned();
+        match shared {
+            Some(shared) => audio::host::render(&shared, out),
+            None => out.fill(0.0),
+        }
         Ok(0)
     })
 }

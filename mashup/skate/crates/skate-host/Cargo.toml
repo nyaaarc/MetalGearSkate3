@@ -9,6 +9,7 @@ bevy={version="0.19",default-features=false,features=["std","multi_threaded","be
 skate-core={path="../skate-core"}
 skate-data={path="../skate-data"}
 skate-net={path="../skate-net"}
+skate-audio={path="../skate-audio"}
 serde={version="1",features=["derive"]}
 serde_json="1"
 half="2.7.1"

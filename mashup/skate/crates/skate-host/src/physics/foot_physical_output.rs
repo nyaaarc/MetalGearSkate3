@@ -11,6 +11,12 @@ pub(crate) struct FootPhysicalOutputs {
     pub output: FootPhysicalOutput,
 }
 impl FootPhysicalOutputs {
+    /// MGSK (from upstream b3c96793): the deck box the feet (and the hands, Skeleton+602/+603)
+    /// are tested against: DeckWidth / 2 and DeckFrontEndSize + DeckMidLength / 2.
+    pub fn deck_box(&self) -> (f32, f32) {
+        (self.settings.deck_half_width, self.settings.deck_total_half_length)
+    }
+
     pub fn load(data: &Collections) -> Result<Self, String> {
         Ok(Self {
             state: FootPhysicalState::default(),

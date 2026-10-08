@@ -158,6 +158,12 @@ impl Session {
         );
         self.advance_published()
     }
+    /// MGSK: the skater's audio sample of the tick just simulated (`crate::audio_state`); call
+    /// once after each tick.
+    pub fn audio_observe(&mut self, observer: &mut crate::audio_state::AudioObserver) -> crate::audio_state::Riding {
+        let dt = self.period();
+        observer.observe(&self.physics, &mut self.skater, dt)
+    }
     pub fn pose(&self) -> Pose {
         let v = self.physics.board.bodies()[skate_core::physics::board::BodyId::Deck.index()]
             .rates

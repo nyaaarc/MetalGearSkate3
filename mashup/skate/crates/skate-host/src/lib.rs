@@ -13,6 +13,7 @@ mod skate_world;
 mod animation;
 mod crash_context;
 mod tuning;
+pub mod audio_state;
 
 pub use physics::bridge;
 
