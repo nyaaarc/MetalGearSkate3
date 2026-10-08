@@ -84,6 +84,13 @@ class Stealth {
 
 // -1 none, 0 stop, 1 start: a pending request from the test harness.
 std::atomic<int> g_request{-1};
+// Optional start pose for the next harness "skate on": mm (Snake's waist) and MGS3 heading in
+// degrees. Guarded by g_status_mutex; consumed by the skate thread.
+struct StartAt {
+  bool set = false;
+  float x = 0, y = 0, z = 0, heading_deg = 0;
+};
+StartAt g_start_at;
 std::mutex g_status_mutex;
 Status g_status;
 
@@ -340,6 +347,19 @@ DWORD WINAPI run(LPVOID) {
       } else if (!snake) {
         log("skate: no player to put on a board");
       } else {
+        StartAt start;
+        {
+          std::lock_guard lock(g_status_mutex);
+          start = g_start_at;
+          g_start_at.set = false;
+        }
+        if (start.set) {
+          // Place Snake first so the game's own state agrees with where the board goes down.
+          *snake = {start.x, start.y, start.z};
+          const int16_t mgs_yaw = static_cast<int16_t>(std::lround(start.heading_deg * 65536.f / 360.f));
+          if (int16_t* yaw = game::snake_yaw()) *yaw = mgs_yaw;
+          if (int16_t* target = game::snake_target_yaw()) *target = mgs_yaw;
+        }
         const float x = snake->x / kMmPerUnit, z = snake->z / kMmPerUnit;
         const float y = (snake->y - kSnakeHeightMm) / kMmPerUnit;
         const float at[3] = {x, y, z};
@@ -457,6 +477,14 @@ DWORD WINAPI run(LPVOID) {
 }  // namespace
 
 void request(bool on) { g_request = on ? 1 : 0; }
+
+void request_at(float x_mm, float y_mm, float z_mm, float heading_deg) {
+  {
+    std::lock_guard lock(g_status_mutex);
+    g_start_at = {true, x_mm, y_mm, z_mm, heading_deg};
+  }
+  g_request = 1;
+}
 
 bool camera(float (&out)[kCameraFloats]) {
   std::lock_guard lock(g_pose_mutex);

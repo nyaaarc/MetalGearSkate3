@@ -137,7 +137,12 @@ std::string run(const std::string& line) {
   if (verb == "skate") {
     std::string arg;
     in >> arg;
-    if (arg != "on" && arg != "off") return "error: usage skate on|off";
+    if (arg != "on" && arg != "off") return "error: usage skate on|off [x y z heading_deg]";
+    float x, y, z, heading;
+    if (arg == "on" && (in >> x >> y >> z >> heading)) {
+      skate::request_at(x, y, z, heading);
+      return "ok (at position)";
+    }
     skate::request(arg == "on");
     return "ok";
   }

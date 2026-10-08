@@ -20,6 +20,8 @@
 //   poke <offset> <type> <value>                 write it (debugging only)
 //   release                                      cancel any held virtual pad state
 //   skate on | skate off                         same as pressing F5
+//   skate on <x> <y> <z> <heading_deg>           start skating at a spot (mm, waist = floor + 800;
+//                                                heading 0 = +z, 90 = +x)
 //   stage <code>                                 load a stage directly (e.g. s091a; "select" =
 //                                                developer menu)
 //   mark <text>                                  write <text> to the plugin log
