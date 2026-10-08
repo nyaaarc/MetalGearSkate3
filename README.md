@@ -117,6 +117,11 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 - Retargeting groundwork: Snake's 57-bone skeleton decoded from `sna_def.mdl` (`tools/mdl_bones.py`),
   the skater's 36 bones exported (`mgsk_bone_count`/`mgsk_bone_name`/`mgsk_bones`), and a
   Snake-to-skater bone map with axis and rest-pose notes in `docs/retarget.json`.
+- Skatepark groundwork (offline, `docs/skatepark.md`): `tools/park_props.py` reads all 661 of
+  Skate 3's Object Dropper props and Skate.Park editor pieces from the player's `parkassets.big`
+  (render meshes, textures, retail collision and grind splines). `tools/props_ride.py` checks
+  that the engine rides their collision as is: a kicker launches the skater and he airs out of
+  a quarter pipe.
 
 ## What's missing
 
@@ -124,6 +129,8 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 - A held weapon and Snake's shadow are unchecked while skating (his gear and head now follow the pose)
 - Board textures not yet checked in game (simple diffuse lighting, no specular)
 - Settings menu
+- Skateparks in game: props (and later a whole spot such as Black Box Park) placed on MGS3 stages,
+  combined with the stage collision and drawn like the board. The plan is in `docs/skatepark.md`.
 - Audio beyond the skater: Skate 3's ambience, world emitters and speech aren't played (MGS3's own
   sound keeps playing); the skater's sound hasn't been listened to in game yet
 - Setup is tested in dry runs and data-only runs (ISO → extract → convert → engine check); a full
@@ -155,6 +162,12 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 - Release zips also carry the licences of [safetyhook](https://github.com/cursey/safetyhook) (BSL-1.0),
   Zydis/Zycore (MIT) and the Rust crates linked into `skate_ffi.dll` (`licenses/rust-crates.md`).
 - MGS3 format research: Jayveer, Joy-Division, GirianSeed and others; see `docs/formats.md`.
+- Skate 3 park data (`tools/park_props.py`, our own code): the RX2 model, texture, ClusteredMesh
+  and tSplineData layouts were learned from the MIT-licensed readers that
+  [skate-3-rust-engine](https://github.com/SK8-ENGINE/skate-3-rust-engine) vendors: `tools/vendor/utt`
+  (rx2_parser, mdl_parser) by duckyinnit, and the Skate 3 Custom Engine Layer contributors'
+  `retail_collision_mesh.py` / `retail_grind_splines.py`. BIG archives are read with the
+  MIT BIG/RefPack readers already vendored in `tools/skate_audio_export`.
 
 ## License
 
