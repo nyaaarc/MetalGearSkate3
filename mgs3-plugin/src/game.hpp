@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string_view>
 
 // What the plugin knows about MGS3's memory, found by signature scan at startup.
 // Layouts and addresses are documented in docs/formats.md ("Runtime findings").
@@ -59,5 +60,14 @@ bool request_stage(const char* name);
 // plugin reads it and before blocking), as if a controller were held. 0 frames cancels.
 void inject_pad(uint16_t buttons, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry, int frames);
 int injected_frames_left();
+
+// The game's link-variable (save/state) buffer, or nullptr before init / outside gameplay.
+// Field offsets follow MGSHDFix's mgs3_linkvarbuf.hpp.
+uint8_t* linkvar();
+constexpr size_t kLinkCurrentItem = 1494;      // short
+constexpr int16_t kItemStealthCamouflage = 0x17;
+
+// The unique match of an IDA-style signature ("48 8B ?? ...") in the game's image, or nullptr.
+uint8_t* find(std::string_view signature);
 
 }  // namespace game

@@ -282,4 +282,11 @@ int16_t* snake_target_yaw() {
   return reinterpret_cast<int16_t*>(*g_snake_control + kSnakeTargetYawOffset);
 }
 
+uint8_t* linkvar() { return g_linkvarbuf ? *g_linkvarbuf : nullptr; }
+
+uint8_t* find(std::string_view signature) {
+  const auto hit = scan(signature);
+  return hit ? *hit : nullptr;
+}
+
 }  // namespace game

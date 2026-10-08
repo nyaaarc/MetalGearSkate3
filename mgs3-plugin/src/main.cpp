@@ -13,6 +13,7 @@
 #include "control.hpp"
 #include "game.hpp"
 #include "log.hpp"
+#include "pose.hpp"
 #include "render.hpp"
 #include "skate.hpp"
 #include "watch.hpp"
@@ -62,6 +63,7 @@ DWORD WINAPI init(LPVOID) {
   bool found = false;
   for (int attempt = 0; attempt < 120 && !(found = game::init()); ++attempt) Sleep(1000);
   if (!found) return 0;
+  pose::init();
   skate::start(dir, ffi);
   render::start(dir, ffi);
   control::start(dir);

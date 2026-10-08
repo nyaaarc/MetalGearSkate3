@@ -300,3 +300,24 @@ MGS1's HZD (FoxdieTeam/mgs_reversing `fmt_hzd.h`) is not the layout; vocabulary 
 - **Skater side** (`mgsk_bone_name`/`mgsk_bones`, root-relative): TRAJECTORY, HIPS, SPINE..SPINE3,
   NECK, NECK1, HEAD, RIGHT/LEFT SHOULDER, ARM, FOREARM, HAND, RIGHT/LEFT UPLEG, LEG, FOOT, TOEBASE,
   SKATEBOARD_ROOT, trucks and wheels, four `*_REPARENTED` helpers. LEFT* is +X; A-pose bind.
+
+### Retargeting (`skate-ffi/src/retarget.rs`)
+
+- **API:** `mgsk_retarget_init(session, sna_def.mdl path, mirror_x)` once, then
+  `mgsk_snake_pose(session, out, 57)` per tick: 57 world matrices in the game's layout (rows
+  X/Y/Z axis, translation, mm), ready for `obj+0xC0`.
+- **Skater bind:** inverse of `skater.glb`'s inverse bind matrices, with the converter's bone
+  basis undone (engine axes X, Y, Z = GLB joint X, Z, -Y; checked: parent-local child offsets
+  then equal the live `mgsk_bones` ones to 1 mm).
+- **Rotation:** mapped bone `i` (skater bone `s`): `R_i = R_root * R_s(t) * R_s(bind)^-1 * C_i`, `C_i`
+  the shortest arc from Snake's rest bone direction to the skater's bind direction (towards the
+  first mapped child with a different skater bone; leaves use parent->bone). Bone matrices are
+  orthonormalised first (they carry ~1% scale). Unmapped bones take their parent's rotation.
+- **Position:** Snake's rest offsets down his hierarchy (lengths kept exactly), then the whole
+  skeleton shifted so his ankle midpoint (17, 21) sits on the skater's. Anchoring at the hips
+  instead would sink his feet ~70 mm into the deck (legs 8% longer).
+- **`mirror_x`:** reflects the skater through his own sagittal plane (root-local X) and swaps
+  LEFT/RIGHT. Because the skater stands sideways on the board, this also flips the stance (feet
+  swap board ends). Off until MGS3's handedness is settled.
+- **Check:** `python -I tools/retarget_check.py <assets> <sna_def.mdl> --png out.png` (stick
+  figures, bone lengths, ankle gap, limb directions). Unit tests: `cargo test retarget`.

@@ -17,6 +17,7 @@
 #include "skate_ffi.h"
 #include "game.hpp"
 #include "log.hpp"
+#include "pose.hpp"
 
 #pragma comment(lib, "xinput.lib")
 
@@ -39,6 +40,8 @@ struct Ffi {
   decltype(&mgsk_tick) tick;
   decltype(&mgsk_root) root;
   decltype(&mgsk_last_error) last_error;
+  decltype(&mgsk_retarget_init) retarget_init;
+  decltype(&mgsk_snake_pose) snake_pose;
 };
 
 // From skate_ffi.dll when it has the .geom reader: decodes and installs a stage's collision,
@@ -46,6 +49,36 @@ struct Ffi {
 using InstallGeomFn = int(__cdecl*)(MgskSession*, const char*, float);
 
 std::filesystem::path g_plugin_dir;
+
+// Guards ignore Snake while skating: equip the stealth camouflage (the game's own invisibility
+// item) and put his previous item back afterwards. `stealth_while_skating=0` in the ini turns it off.
+class Stealth {
+ public:
+  void begin(bool enabled) {
+    uint8_t* link = game::linkvar();
+    if (!enabled || !link || active_) return;
+    memcpy(&previous_, link + game::kLinkCurrentItem, sizeof(previous_));
+    const int16_t stealth = game::kItemStealthCamouflage;
+    memcpy(link + game::kLinkCurrentItem, &stealth, sizeof(stealth));
+    active_ = true;
+  }
+  // Keep it equipped (the game may switch items on its own).
+  void hold() {
+    uint8_t* link = game::linkvar();
+    if (!active_ || !link) return;
+    const int16_t stealth = game::kItemStealthCamouflage;
+    memcpy(link + game::kLinkCurrentItem, &stealth, sizeof(stealth));
+  }
+  void end() {
+    uint8_t* link = game::linkvar();
+    if (active_ && link) memcpy(link + game::kLinkCurrentItem, &previous_, sizeof(previous_));
+    active_ = false;
+  }
+
+ private:
+  bool active_ = false;
+  int16_t previous_ = 0;
+};
 
 // -1 none, 0 stop, 1 start: a pending request from the test harness.
 std::atomic<int> g_request{-1};
@@ -79,7 +112,8 @@ bool bind(T& slot, const char* name) {
 bool load_ffi(Ffi& f) {
   return bind(f.session_new, "mgsk_session_new") && bind(f.install_world, "mgsk_install_world") &&
          bind(f.period, "mgsk_period") && bind(f.activate, "mgsk_activate") && bind(f.tick, "mgsk_tick") &&
-         bind(f.root, "mgsk_root") && bind(f.last_error, "mgsk_last_error");
+         bind(f.root, "mgsk_root") && bind(f.last_error, "mgsk_last_error") &&
+         bind(f.retarget_init, "mgsk_retarget_init") && bind(f.snake_pose, "mgsk_snake_pose");
 }
 
 // The stage's collision file, from the first `.geom` entry in its manifest. The manifests sit
@@ -254,6 +288,20 @@ DWORD WINAPI run(LPVOID) {
   // Optional: older skate_ffi.dll builds have no board export (then nothing is drawn).
   const auto pose_fn = reinterpret_cast<decltype(&mgsk_board_pose)>(GetProcAddress(g_ffi_module, "mgsk_board_pose"));
   if (!pose_fn) log("skate: skate_ffi.dll has no mgsk_board_pose; the board won't be drawn");
+  // Retargeting onto Snake's own skeleton (his model file in the game's assets).
+  bool posing = false;
+  {
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    const auto mdl = std::filesystem::path(exe).parent_path() / "assets" / "mdl" / "us" / "sna_def.mdl";
+    const int mirror = std::stoi(ini_string("mirror_x", "0"));
+    posing = f.retarget_init(session, mdl.string().c_str(), mirror) == 0;
+    log(posing ? "skate: retargeting onto %s (mirror_x %d)" : "skate: retargeting unavailable for %s (mirror_x %d): %s",
+        mdl.string().c_str(), mirror, posing ? "" : f.last_error());
+  }
+  float snake_bones[pose::kSnakeBones * 16];
+  const bool stealth_enabled = ini_string("stealth_while_skating", "1") != "0";
+  Stealth stealth;
   const float period = f.period(session);
   log("skate: engine ready in %lu ms (tick %.4f s). F5 toggles skating.", GetTickCount() - started, period);
 
@@ -276,6 +324,8 @@ DWORD WINAPI run(LPVOID) {
       if (skating) {
         skating = false;
         game::block_input(false);
+        pose::publish(nullptr);
+      stealth.end();
         log("skate: off");
       } else if (!snake) {
         log("skate: no player to put on a board");
@@ -322,6 +372,7 @@ DWORD WINAPI run(LPVOID) {
         } else {
           skating = true;
           game::block_input(true);
+          stealth.begin(stealth_enabled);
           ticks = 0;
           log("skate: on at %.1f %.1f %.1f (mm), Snake yaw %d -> heading %.1f deg", snake->x, snake->y, snake->z,
               yaw ? *yaw : 0, heading * 180.f / std::numbers::pi_v<float>);
@@ -337,6 +388,8 @@ DWORD WINAPI run(LPVOID) {
     if (!snake) {
       skating = false;
       game::block_input(false);
+      pose::publish(nullptr);
+      stealth.end();
       log("skate: player gone, off");
       continue;
     }
@@ -347,6 +400,8 @@ DWORD WINAPI run(LPVOID) {
       log("skate: engine error, off: %s", f.last_error());
       skating = false;
       game::block_input(false);
+      pose::publish(nullptr);
+      stealth.end();
       continue;
     }
     // Translation is the last column of the column-major root matrix.
@@ -363,8 +418,12 @@ DWORD WINAPI run(LPVOID) {
     st.skater[1] = m[13];
     st.skater[2] = m[14];
     st.heading_deg = heading * 180.f / std::numbers::pi_v<float>;
+    stealth.hold();
+    if (posing) pose::publish(f.snake_pose(session, snake_bones, pose::kSnakeBones) == pose::kSnakeBones ? snake_bones : nullptr);
     set_status(st);
     if (++ticks % 120 == 0) {
+      const pose::Stats ps = pose::stats();
+      log("skate: pose hook calls %llu, applied %llu, last bone count %d", ps.calls, ps.applied, ps.last_count);
       log("skate: skater at %.2f %.2f %.2f (m) heading %.0f deg; pad buttons %04X left %d,%d right %d,%d", m[12], m[13], m[14],
           heading * 180.f / std::numbers::pi_v<float>, pad.buttons, pad.left[0], pad.left[1], pad.right[0], pad.right[1]);
     }

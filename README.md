@@ -66,7 +66,7 @@ The stage's real collision is loaded on F5; Snake still plays his walk animation
 ## What's missing
 
 - A stable lookup for the camera and skeleton
-- Feeding MGS3 collision to the skate world; posing Snake from the skater (map ready, not applied in game)
+- Feeding MGS3 collision to the skate world; posing Snake from the skater (`mgsk_snake_pose` computes his bones, not applied in game)
 - Drawing the board in game: written (Present hook, flat colours), not yet seen in game; camera FOV untuned, no scene occlusion
 - Setup (finding MGS3, converting your Skate 3 files), settings menu, audio
 
