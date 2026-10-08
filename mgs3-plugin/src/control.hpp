@@ -15,6 +15,7 @@
 //   seq <step> ; <step> ; ...                    play pad states back to back, frame-exact
 //                                                (each step: buttons lx ly rx ry frames)
 //   teleport <x> <y> <z>                         move Snake (mm, his waist position; floor + 800)
+//   block on|off                                 blank Snake's pad input without skating
 //   peek <offset> <i8|i16|i32|f32>              read the link-variable (state) buffer
 //   poke <offset> <type> <value>                 write it (debugging only)
 //   release                                      cancel any held virtual pad state
