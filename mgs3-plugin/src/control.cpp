@@ -9,6 +9,7 @@
 
 #include "game.hpp"
 #include "log.hpp"
+#include "render.hpp"
 #include "skate.hpp"
 
 namespace control {
@@ -77,6 +78,18 @@ std::string run(const std::string& line) {
     skate::request(arg == "on");
     return "ok";
   }
+  if (verb == "render") {
+    std::string key, value;
+    in >> key >> value;
+    if (!key.empty() && value.empty()) return "error: usage render [<key> <value>]";
+    return render::set(key, value);
+  }
+  if (verb == "stage") {
+    std::string name;
+    in >> name;
+    if (name.empty()) return "error: usage stage <code>";
+    return game::request_stage(name.c_str()) ? "ok" : "error: stage loading unavailable";
+  }
   if (verb == "mark") {
     std::string rest;
     std::getline(in, rest);
@@ -104,6 +117,7 @@ void run_command_file() {
 
 void write_state() {
   const skate::Status sk = skate::status();
+  const render::Status rd = render::status();
   game::Pad pad{};
   const bool have_pad = game::pad(pad);
   const char* stage = game::current_stage();
@@ -115,14 +129,17 @@ void write_state() {
            " \"engine_ready\": %s, \"skating\": %s, \"skater_m\": [%.3f, %.3f, %.3f], \"skater_heading_deg\": %.1f,"
            " \"collision_triangles\": %d,\n"
            " \"pad\": {\"seen\": %s, \"buttons\": \"0x%04X\", \"lx\": %u, \"ly\": %u, \"rx\": %u, \"ry\": %u},"
-           " \"injected_frames_left\": %d}\n",
+           " \"injected_frames_left\": %d,\n"
+           " \"render\": {\"hooked\": %s, \"presents\": %llu, \"drawn\": %llu, \"width\": %u, \"height\": %u}}\n",
            GetTickCount(), stage ? stage : "",
            snake ? (std::string("[") + std::to_string(snake->x) + ", " + std::to_string(snake->y) + ", " +
                     std::to_string(snake->z) + "]").c_str()
                  : "null",
            yaw ? *yaw : 0, sk.ready ? "true" : "false", sk.skating ? "true" : "false", sk.skater[0], sk.skater[1],
            sk.skater[2], sk.heading_deg, sk.collision_triangles, have_pad ? "true" : "false", pad.buttons,
-           pad.left_x, pad.left_y, pad.right_x, pad.right_y, game::injected_frames_left());
+           pad.left_x, pad.left_y, pad.right_x, pad.right_y, game::injected_frames_left(),
+           rd.hooked ? "true" : "false", static_cast<unsigned long long>(rd.presents),
+           static_cast<unsigned long long>(rd.drawn), rd.width, rd.height);
   // Write then rename so readers never see a half-written file.
   const auto tmp = g_dir / L"MetalGearSkate.state.json.tmp";
   std::ofstream(tmp, std::ios::trunc) << json;

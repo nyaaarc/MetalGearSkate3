@@ -180,17 +180,17 @@ pub fn load(assets: &Path) -> Result<[Part; 7], String> {
     Ok(parts)
 }
 
-fn index(value: &Value) -> Result<usize, String> {
+pub(crate) fn index(value: &Value) -> Result<usize, String> {
     value.as_u64().map(|v| v as usize).ok_or_else(|| format!("expected an index, found {value}"))
 }
 
-struct Glb<'a> {
-    json: Value,
+pub(crate) struct Glb<'a> {
+    pub(crate) json: Value,
     blob: &'a [u8],
 }
 
 impl<'a> Glb<'a> {
-    fn parse(bytes: &'a [u8]) -> Result<Self, String> {
+    pub(crate) fn parse(bytes: &'a [u8]) -> Result<Self, String> {
         let word = |at: usize| {
             bytes
                 .get(at..at + 4)
@@ -209,7 +209,7 @@ impl<'a> Glb<'a> {
     }
 
     /// Every component of an accessor, widened to f64.
-    fn components(&self, accessor: usize) -> Result<Vec<f64>, String> {
+    pub(crate) fn components(&self, accessor: usize) -> Result<Vec<f64>, String> {
         let a = &self.json["accessors"][accessor];
         let count = index(&a["count"])?;
         let width = match a["type"].as_str() {

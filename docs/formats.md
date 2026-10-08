@@ -267,3 +267,36 @@ MGS1's HZD (FoxdieTeam/mgs_reversing `fmt_hzd.h`) is not the layout; vocabulary 
     raw); the plugin hooks the per-pad copy and blanks the raw record before it runs.
 - **Snake's facing:** i16 at `control+0x42` (target copy at `+0x4A`), 65536 = full turn.
   Found by turning in place. Zero direction and handedness vs the Skate engine not yet matched.
+
+## Snake's skeleton
+
+- **Model:** gameplay Snake is `assets/mdl/us/sna_def.mdl` (model strcode `413aa8` = `GV_StrCode("sna_def")`).
+  It is in no stage `manifest.txt`, so it's loaded as a resident asset. The camo variants
+  `sna_def_slot_camoufla-*.mdl` have the identical skeleton; cutscene `sna_def_dmo.mdl` has 89
+  bones (the same 57 plus duplicated finger chains). Reader: `tools/mdl_bones.py`.
+- **`.mdl` bone table** (`MDC ` magic; spec from Jayveer's Noesis `mdl.h`, read only): header
+  `+0x04` bone count, `+0x18` bone offset (0x50); bones 0x50 bytes: strcode, flags, int32 parent
+  (-1 root, always an earlier index), float4 position relative to parent, float4 rest position
+  in model space, float4 bounds max/min. **Translation only**: no rest rotations, so each bone's
+  bind orientation is identity and a runtime bone matrix is that bone's model-to-world transform.
+  Names are 24-bit strcode hashes; brute force up to 4 chars and common bone words found none.
+- **57 bones**, matching the render object's count at `obj+0xB0`. Model origin = bone 0 at the waist;
+  +Y up, mm, model faces +Z. Rest pose is a **T-pose** (arms along ±X at y = 400, palms down).
+  (The older "~62 entries, 8–57 Snake" figure was a rough range in the shadow buffer, not a count.)
+
+| Bones | What (side by X sign; anatomical side unconfirmed) |
+|---|---|
+| 0 | root / pelvis (waist, origin); legs hang from it |
+| 1, 2 | lower spine (y 30), chest (y 220; parent of neck and clavicles) |
+| 3, 4 | neck (440), head (560) |
+| 5–9 / 10–14 | +X / −X arm: clavicle (±50), upper arm (±180), elbow (±440), forearm twist (±580), wrist (±700) |
+| 15–18 / 19–22 | +X / −X leg: hip joint (±100, −100), knee (−550), ankle (−1000), toe (−1100, z +100) |
+| 23 / 40 | palm root (zero length, at the wrist), parent of all fingers |
+| 24–26, 27–29, 30–32 | index, middle, thumb (thumb points +Z); −X side 41–49 |
+| 33; 34–36, 37–39 | ring/little metacarpal; ring, little fingers; −X side 50–56 |
+
+- Height: toe joint to head joint 1660 mm (skater 1.565 m); legs ~8% longer than the skater's,
+  torso and arms within 2%. Bone map, axis and rest-pose notes: `docs/retarget.json`.
+- **Skater side** (`mgsk_bone_name`/`mgsk_bones`, root-relative): TRAJECTORY, HIPS, SPINE..SPINE3,
+  NECK, NECK1, HEAD, RIGHT/LEFT SHOULDER, ARM, FOREARM, HAND, RIGHT/LEFT UPLEG, LEG, FOOT, TOEBASE,
+  SKATEBOARD_ROOT, trucks and wheels, four `*_REPARENTED` helpers. LEFT* is +X; A-pose bind.

@@ -14,7 +14,14 @@
 //                                                128 centre, up = 0)
 //   release                                      cancel any held virtual pad state
 //   skate on | skate off                         same as pressing F5
+//   stage <code>                                 load a stage directly (e.g. s091a; "select" =
+//                                                developer menu)
 //   mark <text>                                  write <text> to the plugin log
+//   render                                       report the board renderer's settings
+//   render <key> <value>                         change one live (not saved): fov_deg,
+//                                                near_mm, far_mm, aspect (0 = back buffer),
+//                                                flip_z, depth_game, debug (0/1 or on/off;
+//                                                debug draws a marker and axes at Snake)
 namespace control {
 
 void start(const std::filesystem::path& plugin_dir);

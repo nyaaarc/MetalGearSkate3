@@ -10,6 +10,7 @@
 #include <optional>
 #include <vector>
 #include <cmath>
+#include <cstring>
 #include <numbers>
 #include <string>
 
@@ -56,6 +57,17 @@ void set_status(const Status& s) {
   g_status = s;
 }
 HMODULE g_ffi_module = nullptr;
+
+// Board pose published by the skate thread for the renderer.
+std::mutex g_pose_mutex;
+float g_pose[kBoardBodies * 16];
+bool g_pose_valid = false;
+
+void publish_pose(const float* pose) {
+  std::lock_guard lock(g_pose_mutex);
+  if (pose) memcpy(g_pose, pose, sizeof(g_pose));
+  g_pose_valid = pose != nullptr;
+}
 
 template <typename T>
 bool bind(T& slot, const char* name) {
@@ -239,6 +251,9 @@ DWORD WINAPI run(LPVOID) {
   const std::filesystem::path collision_dir = ini_string("collision", "");
   if (!install_geom) log("skate: skate_ffi.dll has no .geom reader; using %s", collision_dir.string().c_str());
   std::string collision_stage;  // stage whose collision the session holds; empty = flat floor
+  // Optional: older skate_ffi.dll builds have no board export (then nothing is drawn).
+  const auto pose_fn = reinterpret_cast<decltype(&mgsk_board_pose)>(GetProcAddress(g_ffi_module, "mgsk_board_pose"));
+  if (!pose_fn) log("skate: skate_ffi.dll has no mgsk_board_pose; the board won't be drawn");
   const float period = f.period(session);
   log("skate: engine ready in %lu ms (tick %.4f s). F5 toggles skating.", GetTickCount() - started, period);
 
@@ -315,6 +330,7 @@ DWORD WINAPI run(LPVOID) {
     }
     st.skating = skating;
     if (!skating) {
+      publish_pose(nullptr);
       set_status(st);
       continue;
     }
@@ -341,6 +357,8 @@ DWORD WINAPI run(LPVOID) {
     const float heading = std::atan2(m[8], m[10]);
     if (int16_t* yaw = game::snake_yaw()) *yaw = headings.to_mgs(heading);
     if (int16_t* target = game::snake_target_yaw()) *target = headings.to_mgs(heading);
+    float pose[kBoardBodies * 16];
+    publish_pose(pose_fn && pose_fn(session, pose, kBoardBodies) == kBoardBodies ? pose : nullptr);
     st.skater[0] = m[12];
     st.skater[1] = m[13];
     st.skater[2] = m[14];
@@ -356,6 +374,12 @@ DWORD WINAPI run(LPVOID) {
 }  // namespace
 
 void request(bool on) { g_request = on ? 1 : 0; }
+
+bool board_pose(float (&out)[kBoardBodies * 16]) {
+  std::lock_guard lock(g_pose_mutex);
+  if (g_pose_valid) memcpy(out, g_pose, sizeof(g_pose));
+  return g_pose_valid;
+}
 
 Status status() {
   std::lock_guard lock(g_status_mutex);

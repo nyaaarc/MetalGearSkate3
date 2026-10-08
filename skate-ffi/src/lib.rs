@@ -8,16 +8,31 @@ use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use skate_host::bridge::{Controls, Session};
 
 mod board;
 mod geom;
+mod retarget;
 
 static VERSION: &CStr = c"skate-ffi 0.1.0";
 
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
+}
+
+/// Per-session state the engine doesn't hold, keyed by session address: the assets folder it
+/// was created from and the retargeting set up by `mgsk_retarget_init`.
+struct Extra {
+    assets: PathBuf,
+    retarget: Option<retarget::Retarget>,
+}
+
+static EXTRAS: Mutex<std::collections::BTreeMap<usize, Extra>> = Mutex::new(std::collections::BTreeMap::new());
+
+fn extras() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<usize, Extra>> {
+    EXTRAS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn set_error(message: impl Into<String>) {
@@ -88,8 +103,9 @@ pub unsafe extern "C" fn mgsk_session_new(
         let root = path_from(assets_dir)?;
         let tris = triangles_from(triangles, triangle_count)?;
         let spawn = unsafe { [*spawn, *spawn.add(1), *spawn.add(2)] };
-        let session = Session::new(&root, tris, Vec::new(), spawn, heading)?;
-        Ok(Box::into_raw(Box::new(session)))
+        let session = Box::into_raw(Box::new(Session::new(&root, tris, Vec::new(), spawn, heading)?));
+        extras().insert(session as usize, Extra { assets: root, retarget: None });
+        Ok(session)
     })
 }
 
@@ -99,6 +115,7 @@ pub unsafe extern "C" fn mgsk_session_new(
 pub unsafe extern "C" fn mgsk_session_free(session: *mut Session) {
     if !session.is_null() {
         guard((), || {
+            extras().remove(&(session as usize));
             drop(unsafe { Box::from_raw(session) });
             Ok(())
         });
@@ -343,5 +360,123 @@ pub unsafe extern "C" fn mgsk_board_mesh(
             std::ptr::copy_nonoverlapping(part.indices.as_ptr(), indices, ni);
         }
         Ok(1)
+    })
+}
+
+/// Number of skater bones in `mgsk_bones` / `mgsk_bone_name`, or -1 on failure.
+///
+/// # Safety
+/// `session` is a live session.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_bone_count(session: *const Session) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_ref() }.ok_or("null session")?;
+        count_i32(session.pose().bones.len())
+    })
+}
+
+/// Copies the name of skater bone `index` (NUL-terminated, truncated to fit) into `out`, which
+/// holds `capacity` bytes. Returns the name's full length in bytes without the NUL, or -1.
+///
+/// # Safety
+/// `session` is a live session; `out` has room for `capacity` bytes (may be null when
+/// `capacity` is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_bone_name(session: *const Session, index: u32, out: *mut c_char, capacity: u32) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_ref() }.ok_or("null session")?;
+        let names = session.pose().names;
+        let name = names.get(index as usize).ok_or_else(|| format!("no bone {index}"))?;
+        if capacity > 0 {
+            if out.is_null() {
+                return Err("null out".into());
+            }
+            let n = name.len().min(capacity as usize - 1);
+            unsafe {
+                std::ptr::copy_nonoverlapping(name.as_ptr().cast::<c_char>(), out, n);
+                *out.add(n) = 0;
+            }
+        }
+        count_i32(name.len())
+    })
+}
+
+/// Writes up to `max_bones` skater bone transforms (16 floats each, column-major) to `out`,
+/// in `mgsk_bone_name` order. They are relative to the skater root: the world transform of
+/// bone `i` is `root * bone[i]`, with `root` from `mgsk_root`. Returns the count written, or -1.
+///
+/// # Safety
+/// `session` is a live session; `out` has room for `max_bones * 16` floats (may be null when
+/// `max_bones` is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_bones(session: *const Session, out: *mut f32, max_bones: u32) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_ref() }.ok_or("null session")?;
+        let bones = session.pose().bones;
+        let n = bones.len().min(max_bones as usize);
+        if n > 0 {
+            if out.is_null() {
+                return Err("null out".into());
+            }
+            for (i, bone) in bones[..n].iter().enumerate() {
+                unsafe { std::ptr::copy_nonoverlapping(bone.to_cols_array().as_ptr(), out.add(i * 16), 16) };
+            }
+        }
+        count_i32(n)
+    })
+}
+
+/// Sets up skater -> Snake retargeting for `session`: reads Snake's rest skeleton from the MGS3
+/// model `snake_mdl_path` (`assets/mdl/us/sna_def.mdl`) and the skater's bind pose from the
+/// session's `private/skater.glb`. With `mirror_x` nonzero, the skater's pose is reflected
+/// left-right before it drives Snake. 0 on success.
+///
+/// # Safety
+/// `session` is a live session not used concurrently; `snake_mdl_path` is a NUL-terminated
+/// UTF-8 path.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_retarget_init(session: *mut Session, snake_mdl_path: *const c_char, mirror_x: i32) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_ref() }.ok_or("null session")?;
+        let key = std::ptr::from_ref(session) as usize;
+        let assets = extras().get(&key).ok_or("unknown session")?.assets.clone();
+        let path = path_from(snake_mdl_path)?;
+        let data = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let snake = retarget::read_mdl_bones(&data).map_err(|e| format!("{}: {e}", path.display()))?;
+        let bind = retarget::read_skater_bind(&assets.join("private").join("skater.glb"))?;
+        let retarget = retarget::Retarget::new(snake, &session.pose().names, &bind, mirror_x != 0)?;
+        extras().get_mut(&key).ok_or("unknown session")?.retarget = Some(retarget);
+        Ok(0)
+    })
+}
+
+/// Writes up to `max_bones` of Snake's bone world matrices for the current skater pose to
+/// `out`, 16 floats each in MGS3's layout: rows X axis, Y axis, Z axis, translation
+/// `(x, y, z, 1)`, millimetres, engine/game axes. Needs `mgsk_retarget_init` first. Returns the
+/// count written (57 for `sna_def.mdl` when `max_bones` allows), or -1.
+///
+/// # Safety
+/// `session` is a live session; `out` has room for `max_bones * 16` floats (may be null when
+/// `max_bones` is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_snake_pose(session: *const Session, out: *mut f32, max_bones: u32) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_ref() }.ok_or("null session")?;
+        let extras = extras();
+        let retarget = extras
+            .get(&(std::ptr::from_ref(session) as usize))
+            .and_then(|e| e.retarget.as_ref())
+            .ok_or("mgsk_retarget_init has not succeeded for this session")?;
+        let pose = session.pose();
+        let bones: Vec<[f32; 16]> = pose.bones.iter().map(|b| b.to_cols_array()).collect();
+        let snake = retarget.pose(&pose.root.to_cols_array(), &bones)?;
+        let n = snake.len().min(max_bones as usize);
+        if n > 0 {
+            if out.is_null() {
+                return Err("null out".into());
+            }
+            unsafe { std::ptr::copy_nonoverlapping(snake[..n].as_flattened().as_ptr(), out, n * 16) };
+        }
+        count_i32(n)
     })
 }

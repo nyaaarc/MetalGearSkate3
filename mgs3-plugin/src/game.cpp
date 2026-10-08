@@ -4,6 +4,7 @@
 #include <psapi.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 
@@ -28,6 +29,10 @@ constexpr size_t kSnakeTargetYawOffset = 0x4A;
 
 uint8_t** g_snake_control = nullptr;
 
+// Static camera object (docs/formats.md, "Runtime findings"): +0x40 look-at, +0x50 eye.
+constexpr size_t kCameraRva = 0x1D39D80;
+constexpr size_t kCameraLookAt = 0x40, kCameraEye = 0x50;
+
 // Processed pads, 0x44 bytes each, filled from the raw Steam Input block by the per-frame pad
 // update at exe+111DF0 (MC 3.0.0); this is its first instruction after the prologue:
 // lea rbp,[pads]; mov r14d,ecx; mov [rsp+0x68],rbp
@@ -50,6 +55,42 @@ Pad g_pad_copy{};
 bool g_pad_seen = false;
 std::atomic<bool> g_block_input{false};
 
+// Stage loading, from MGSHDFix (MIT, src/resources/game_funcs.cpp, MGS3 "EnterDeveloperMenu"):
+// GM_SetArea(GM_SaveArea, name); GCL_ChangeSenerioCode(StrCode("scenerio")); GM_Result = 9999;
+// *GM_LoadRequest = 3. Same signatures as MGSHDFix uses.
+constexpr std::string_view kSetAreaCallSig = "E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? E8";
+constexpr std::string_view kScenarioSig =
+    "83 0D ?? ?? ?? ?? ?? B9 ?? ?? ?? ?? E8 ?? ?? ?? ?? B9 ?? ?? ?? ?? 48 83 C4 ?? E9";
+constexpr std::string_view kLinkVarBufSig = "4C 8B 05 ?? ?? ?? ?? 66 41 83 78 ?? 00";
+constexpr size_t kLinkResult = 2, kLinkSaveArea = 16;  // short GM_Result, int GM_SaveArea
+
+using SetAreaFn = void(__fastcall*)(int id, const char* dirname);
+using ChangeScenarioFn = void(__fastcall*)(unsigned int code);
+SetAreaFn g_set_area = nullptr;
+ChangeScenarioFn g_change_scenario = nullptr;
+int* g_load_request = nullptr;
+uint8_t** g_linkvarbuf = nullptr;
+char g_pending_stage[16] = {};  // guarded by g_pad_mutex; empty = nothing pending
+
+// KCEJ string hash (24-bit rotate-and-add), as in MGSHDFix GameVars::GV_StrCode.
+constexpr uint32_t strcode(const char* text) {
+  uint32_t h = 0;
+  for (; *text; ++text) h = (((h << 5) | (h >> 19)) + static_cast<unsigned char>(*text)) & 0xFFFFFF;
+  return h;
+}
+
+void load_stage_now(const char* name) {
+  uint8_t* link = *g_linkvarbuf;
+  int save_area;
+  memcpy(&save_area, link + kLinkSaveArea, sizeof(save_area));
+  g_set_area(save_area, name);
+  g_change_scenario(strcode("scenerio"));
+  const short result = 9999;
+  memcpy(link + kLinkResult, &result, sizeof(result));
+  *g_load_request = 3;
+  log("game: loading stage %s", name);
+}
+
 struct Injection {
   uint16_t buttons = 0;
   uint8_t sticks[4] = {0x80, 0x80, 0x80, 0x80};  // RX RY LX LY
@@ -61,6 +102,10 @@ void __fastcall on_pad_copy(uint8_t* dst, uint8_t* src) {
   if (src == g_pads) {  // pad 0
     {
       std::lock_guard lock(g_pad_mutex);
+      if (g_pending_stage[0]) {
+        load_stage_now(g_pending_stage);
+        g_pending_stage[0] = 0;
+      }
       if (g_inject.frames > 0) {
         --g_inject.frames;
         memcpy(src + 4, &g_inject.buttons, sizeof(uint16_t));
@@ -164,6 +209,16 @@ bool init() {
   } else {
     log("game: stage-name signature not found (or not unique)");
   }
+  if (const auto call = scan(kSetAreaCallSig)) g_set_area = reinterpret_cast<SetAreaFn>(rip_target(*call + 1));
+  if (const auto scenario = scan(kScenarioSig)) {
+    g_change_scenario = reinterpret_cast<ChangeScenarioFn>(rip_target(*scenario + 0xD));
+    // or dword [rip+disp32], imm8: disp at +2, instruction ends at +7.
+    int32_t disp;
+    memcpy(&disp, *scenario + 2, sizeof(disp));
+    g_load_request = reinterpret_cast<int*>(*scenario + 7 + disp);
+  }
+  if (const auto link = scan(kLinkVarBufSig)) g_linkvarbuf = reinterpret_cast<uint8_t**>(rip_target(*link + 3));
+  log("game: stage loading %s", g_set_area && g_change_scenario && g_load_request && g_linkvarbuf ? "ready" : "unavailable");
   log("game: Snake control pointer at exe+%llX (code exe+%llX)",
       static_cast<unsigned long long>(reinterpret_cast<uint8_t*>(g_snake_control) - exe),
       static_cast<unsigned long long>(*site - exe));
@@ -183,12 +238,34 @@ void inject_pad(uint16_t buttons, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry
   g_inject = {buttons, {rx, ry, lx, ly}, frames};
 }
 
+bool request_stage(const char* name) {
+  if (!g_set_area || !g_change_scenario || !g_load_request || !g_linkvarbuf) return false;
+  if (strlen(name) >= sizeof(g_pending_stage)) return false;
+  std::lock_guard lock(g_pad_mutex);
+  strcpy_s(g_pending_stage, name);
+  return true;
+}
+
 int injected_frames_left() {
   std::lock_guard lock(g_pad_mutex);
   return g_inject.frames;
 }
 
 const char* current_stage() { return g_stage; }
+
+bool camera(Vec3& eye, Vec3& look_at) {
+  const auto* object = reinterpret_cast<const uint8_t*>(GetModuleHandleW(nullptr)) + kCameraRva;
+  memcpy(&look_at, object + kCameraLookAt, sizeof(Vec3));
+  memcpy(&eye, object + kCameraEye, sizeof(Vec3));
+  const auto sane = [](const Vec3& v) {
+    for (const float c : {v.x, v.y, v.z}) {
+      if (!std::isfinite(c) || std::fabs(c) > 1e7f) return false;
+    }
+    return true;
+  };
+  const float dx = eye.x - look_at.x, dy = eye.y - look_at.y, dz = eye.z - look_at.z;
+  return sane(eye) && sane(look_at) && dx * dx + dy * dy + dz * dz > 1.f;
+}
 
 Vec3* snake_position() {
   if (!g_snake_control || !*g_snake_control) return nullptr;

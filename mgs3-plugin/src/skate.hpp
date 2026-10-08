@@ -26,4 +26,10 @@ struct Status {
 };
 Status status();
 
+// The board's body transforms from the latest engine tick: MGSK_BODY_COUNT column-major 4x4
+// matrices in engine units (m), MGSK_BODY_* order. False while not skating (or when the DLL
+// has no mgsk_board_pose). Safe from any thread; the renderer reads it every frame.
+constexpr int kBoardBodies = 7;
+bool board_pose(float (&out)[kBoardBodies * 16]);
+
 }  // namespace skate

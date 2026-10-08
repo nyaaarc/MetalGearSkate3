@@ -2,7 +2,7 @@
 // it loads skate_ffi.dll (the Skate 3 engine) from the same folder.
 //
 // So far: log the game module layout, load the skate engine DLL, find Snake by signature
-// (game.hpp) and log his position, start skate mode (skate.hpp, F5), and run the file-driven write watch (watch.hpp) used for
+// (game.hpp) and log his position, start skate mode (skate.hpp, F5), draw the board (render.hpp), and run the file-driven write watch (watch.hpp) used for
 // reverse engineering. No gameplay hooks yet.
 
 #include <windows.h>
@@ -13,6 +13,7 @@
 #include "control.hpp"
 #include "game.hpp"
 #include "log.hpp"
+#include "render.hpp"
 #include "skate.hpp"
 #include "watch.hpp"
 
@@ -62,6 +63,7 @@ DWORD WINAPI init(LPVOID) {
   for (int attempt = 0; attempt < 120 && !(found = game::init()); ++attempt) Sleep(1000);
   if (!found) return 0;
   skate::start(dir, ffi);
+  render::start(dir, ffi);
   control::start(dir);
 
   // Log Snake's position whenever it moves by more than half a metre (to verify the lookup).

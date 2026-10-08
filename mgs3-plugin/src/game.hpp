@@ -35,6 +35,10 @@ Vec3* snake_position();
 int16_t* snake_yaw();
 int16_t* snake_target_yaw();
 
+// The game camera's eye and look-at points (mm, y up), read from the static camera object at
+// exe+1D39D80 (MC 3.0.0 only; no signature yet). False when they don't look like positions.
+bool camera(Vec3& eye, Vec3& look_at);
+
 // Name of the loaded stage, e.g. "s091a", or nullptr before init. Empty in menus.
 const char* current_stage();
 
@@ -45,6 +49,11 @@ bool pad(Pad& out);
 // While true, the game's own view of pad 0 is blanked after each update (no buttons, sticks
 // centred), so Snake's movement code ignores the controller. The real state still reaches pad().
 void block_input(bool blocked);
+
+// Load a stage by code (e.g. "s091a", or "select" for the developer menu) the way MGSHDFix's
+// "return to developer menu" does. Runs on the game thread at the next pad update. False if
+// the functions weren't found or the name is too long.
+bool request_stage(const char* name);
 
 // Test harness: replace pad 0 with this state for the next `frames` game frames (before the
 // plugin reads it and before blocking), as if a controller were held. 0 frames cancels.

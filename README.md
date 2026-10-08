@@ -59,12 +59,15 @@ The stage's real collision is loaded on F5; Snake still plays his walk animation
 - Board data for drawing: `mgsk_board_pose` gives the engine's seven board bodies (deck, trucks,
   wheels) as world transforms, and `mgsk_board_mesh` reads each part's mesh from the converted
   `skater.glb` in that body's frame; `tools/board_check.py` checks both off-game.
+- Retargeting groundwork: Snake's 57-bone skeleton decoded from `sna_def.mdl` (`tools/mdl_bones.py`),
+  the skater's 36 bones exported (`mgsk_bone_count`/`mgsk_bone_name`/`mgsk_bones`), and a
+  Snake-to-skater bone map with axis and rest-pose notes in `docs/retarget.json`.
 
 ## What's missing
 
 - A stable lookup for the camera and skeleton
-- Feeding MGS3 collision to the skate world; posing Snake from the skater
-- Drawing the board in game (the plugin does not use the board exports yet; flat colours, no textures)
+- Feeding MGS3 collision to the skate world; posing Snake from the skater (map ready, not applied in game)
+- Drawing the board in game: written (Present hook, flat colours), not yet seen in game; camera FOV untuned, no scene occlusion
 - Setup (finding MGS3, converting your Skate 3 files), settings menu, audio
 
 ## Credits
@@ -73,6 +76,8 @@ The stage's real collision is loaded on F5; Snake still plays his walk animation
   by dumbad and contributors, as used in [2010 Rust Rewrite Mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup)
   by chasmlol, a fork of [IW4L](https://github.com/vladtrc/iw4L) by vladtrc (Apache-2.0).
 - Repository structure follows [GTA San AnSkateas](https://github.com/ryglizzy/GTA-San-AnSkateas) by ryglizzy.
+- Direct3D 11 hooking approach (Present, state save/restore, coexisting hooks) studied from
+  [MGSHDFix](https://github.com/ShizCalev/MGSHDFix) by ShizCalev and contributors (MIT).
 - MGS3 format research: Jayveer, Joy-Division, GirianSeed and others; see `docs/formats.md`.
 
 ## License

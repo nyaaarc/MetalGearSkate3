@@ -69,6 +69,23 @@ int mgsk_activate(MgskSession* session, const float* position, float heading);
 int mgsk_tick(MgskSession* session, const MgskControls* controls);
 /* Writes the skater root transform (16 floats, column-major). */
 int mgsk_root(const MgskSession* session, float* out);
+/* Number of skater bones (36 with the stock skater: body, board and *_REPARENTED helpers), or -1. */
+int mgsk_bone_count(const MgskSession* session);
+/* Copies bone `index`'s name (e.g. "LEFTFOREARM"), NUL-terminated and truncated to fit, into out
+ * (capacity bytes; out may be null when capacity is 0). Returns the full name length, or -1. */
+int mgsk_bone_name(const MgskSession* session, uint32_t index, char* out, uint32_t capacity);
+/* Writes up to max_bones skater bone transforms (16 floats each, column-major) to out, in
+ * mgsk_bone_name order. Root-relative, not world: bone i in world = root * bone[i], root from
+ * mgsk_root. Metres, engine axes. Returns the count written, or -1. */
+int mgsk_bones(const MgskSession* session, float* out, uint32_t max_bones);
+/* Sets up skater -> Snake retargeting: Snake's rest skeleton from the MGS3 model snake_mdl_path
+ * (assets/mdl/us/sna_def.mdl), the skater's bind pose from the session's private/skater.glb.
+ * mirror_x nonzero reflects the skater left-right before driving Snake. 0 on success, -1. */
+int mgsk_retarget_init(MgskSession* session, const char* snake_mdl_path, int mirror_x);
+/* Writes up to max_bones of Snake's bone world matrices for the current skater pose (16 floats
+ * each, MGS3 layout: rows X axis, Y axis, Z axis, translation (x, y, z, 1), millimetres). Needs
+ * mgsk_retarget_init. Returns the count written (57 for sna_def.mdl), or -1. */
+int mgsk_snake_pose(const MgskSession* session, float* out, uint32_t max_bones);
 /* Writes up to max_bodies board part world transforms (16 floats each, column-major) to out,
  * in MGSK_BODY_* order. Returns the count written, or -1. */
 int mgsk_board_pose(const MgskSession* session, float* out, uint32_t max_bodies);
