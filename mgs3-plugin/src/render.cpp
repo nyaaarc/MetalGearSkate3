@@ -61,6 +61,7 @@ struct Settings {
   float depth_bias = 0.002f; // relative: the scene must be this much nearer to hide the board
   bool depth_debug = false;  // log the scene's depth under the deck and the deck's own, once a second
   bool textures = true;      // the board's Skate 3 textures (when the DLL has them), else flat colours
+  bool dump_after = false;   // `render palette now` records palettes after Snake is posed (else before)
   bool debug = false;        // marker + axes at Snake's position, skating or not
   // skate: while skating, the whole frame is drawn from the Skate 3 engine's chase camera (the
   //        game's camera constants are rewritten), otherwise as `game`;
@@ -122,6 +123,7 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
   else if (key == "depth_bias") ok = parse_float(value, n.depth_bias) && n.depth_bias > -0.5f && n.depth_bias < 0.5f;
   else if (key == "depth_debug") ok = parse_bool(value, n.depth_debug);
   else if (key == "textures") ok = parse_bool(value, n.textures);
+  else if (key == "dump_after") ok = parse_bool(value, n.dump_after);
   else if (key == "debug") ok = parse_bool(value, n.debug);
   else if (key == "camera") {
     ok = true;
@@ -1054,7 +1056,7 @@ void dump_draw(const uint8_t* globals) {
   Vec d;
   // Every draw of the frame (main-camera skinned ones have d; others are recorded with d = NaN so
   // rigid pieces, e.g. Snake's gear, whose world transform is folded into gVS_Pers, show up too).
-  if (g_dump.size() >= 4096) return;
+  if (g_dump.size() >= 16384) return;  // a busy frame has ~5000
   if (!main_camera_draw(globals, pers, d)) d = {NAN, NAN, NAN};
   if (g_dump.empty()) {
     g_dump_have_bones = pose::game_bones(g_dump_bones, g_dump_origin, g_dump_object, g_dump_relative);
@@ -1228,6 +1230,7 @@ int match_bone(const float* slot, const float* bones, Vec origin, float& err) {
 // kAnchored + bone * 2 + (relative to the draw's origin), or -1.
 constexpr float kAnchorMm = 450.f;
 constexpr float kAnchorDrawMm = 1500.f;
+constexpr int kHeadBone = 4;  // sna_def.mdl: the joint his headband and hair rig hangs from
 int anchor_slot(const float* slot, Vec d) {
   if (g_skin.passes == 0) return -1;
   const float* game = g_skin.game[0];
@@ -1236,9 +1239,23 @@ int anchor_slot(const float* slot, Vec d) {
   // Only draws on or near him: other draws carry stale palette contents (often his own slots
   // from an earlier draw) that would otherwise anchor too.
   const Vec off = Od - O;
-  if (dot(off, off) > kAnchorDrawMm * kAnchorDrawMm) return -1;
+  // A draw on its own origin (his headband/hair rig hangs on the game's head, ~0.6 m up) has
+  // slots relative to that origin; their small offsets would otherwise land near his hips when
+  // read relative to his object's origin. While he rides, that origin can be metres from the
+  // latest snapshot's, so it is checked against every recent pass's head instead of the gate.
+  const bool own_origin = dot(off, off) > 200.f * 200.f;
+  if (!own_origin && dot(off, off) > kAnchorDrawMm * kAnchorDrawMm) return -1;
   int best = -1;
   float best_d2 = kAnchorMm * kAnchorMm;
+  if (own_origin) {
+    // Always the head, so the rig doesn't hop between joints from frame to frame.
+    for (int k = 0; k < g_skin.passes; ++k) {
+      const float* h = g_skin.game[k] + kHeadBone * 16;
+      const Vec gap{Od.x - h[12], Od.y - h[13], Od.z - h[14]};
+      if (dot(gap, gap) < kAnchorMm * kAnchorMm) return kAnchored + kHeadBone * 2 + 1;
+    }
+    return -1;
+  }
   for (int rel = 0; rel < 2; ++rel) {
     const Vec base = rel ? Od : O;
     const Vec p{slot[3] + base.x, slot[7] + base.y, slot[11] + base.z};
@@ -1258,9 +1275,40 @@ int anchor_slot(const float* slot, Vec d) {
 
 // Moves an attachment slot with its anchor bone: new = ours(bone) * inverse(game(bone)) * slot.
 void move_with_anchor(float* slot, int code, Vec d) {
+  if (code == kHeadBone * 2 + 1) {
+    // His headband/hair rig: the game hangs its root this far from its head joint (head space,
+    // mm; measured standing) and simulates the tails under gravity. Move the root onto our head
+    // and keep the game's tail orientation, so they still hang down.
+    constexpr float kRigOffset[3] = {0.f, 85.f, -83.f};
+    const float* h = g_skin.ours + kHeadBone * 16;  // rows: X, Y, Z axis, translation
+    const Vec Od{g_L_frame.x + d.x, g_L_frame.y + d.y, g_L_frame.z + d.z};
+    for (int r = 0; r < 3; ++r) {
+      const float root = h[12 + r] + kRigOffset[0] * h[0 + r] + kRigOffset[1] * h[4 + r] + kRigOffset[2] * h[8 + r];
+      // The game's root is the draw's origin, which the GPU adds back to the slot.
+      const float game_root = r == 0 ? Od.x : r == 1 ? Od.y : Od.z;
+      slot[r * 4 + 3] += root - game_root;
+    }
+    return;
+  }
   const int bone = code / 2;
   const bool rel = code % 2;
-  const float* g = g_skin.game[0] + bone * 16;  // rows: X, Y, Z axis, translation
+  const Vec Od{g_L_frame.x + d.x, g_L_frame.y + d.y, g_L_frame.z + d.z};
+  // The game placed a draw-relative attachment (on its own origin) from its bone in some recent
+  // pass; use the pass whose joint is nearest that origin — one choice for the whole draw, so its
+  // slots move together — or a lagging snapshot throws it off while he moves.
+  int pass = 0;
+  if (rel) {
+    float best = 1e30f;
+    for (int k = 0; k < g_skin.passes; ++k) {
+      const float* m = g_skin.game[k] + bone * 16;
+      const Vec gap{Od.x - m[12], Od.y - m[13], Od.z - m[14]};
+      if (dot(gap, gap) < best) {
+        best = dot(gap, gap);
+        pass = k;
+      }
+    }
+  }
+  const float* g = g_skin.game[pass] + bone * 16;  // rows: X, Y, Z axis, translation
   const float* o = g_skin.ours + bone * 16;
   // Linear maps (world from bone): column c = row c of the matrix. Delta = A_ours * A_game^T.
   float delta[3][3];
@@ -1271,7 +1319,6 @@ void move_with_anchor(float* slot, int code, Vec d) {
       delta[r][c] = v;
     }
   }
-  const Vec Od{g_L_frame.x + d.x, g_L_frame.y + d.y, g_L_frame.z + d.z};
   const Vec base = rel ? Od : g_skin.origin[0];
   // Where the slot's origin lands now, relative to the anchor joint, carried by the delta.
   const float p[3] = {slot[3] + base.x - g[12], slot[7] + base.y - g[13], slot[11] + base.z - g[14]};
@@ -1290,7 +1337,14 @@ void move_with_anchor(float* slot, int code, Vec d) {
 // Rewrites Snake's palette in a $Globals image with the published pose; true if this draw was
 // one of Snake's. Caller holds g_cap_mutex.
 bool pose_snake(uint8_t* globals) {
-  if (!g_rest_loaded || g_skin.state < 0 || !g_L_known) return false;
+  if (!g_rest_loaded || g_skin.state < 0) return false;
+  if (!g_L_known) {
+    // Some of his draws can come before this frame's first stage draw gives L. Skipping them
+    // drew those pieces in the game's own pose for a frame (a flicker of jitter against the
+    // board); extrapolate L from the last two frames instead (note_look_at replaces it).
+    if (g_L_history < 2) return false;
+    g_L_frame = {2.f * g_L_prev.x - g_L_prev2.x, 2.f * g_L_prev.y - g_L_prev2.y, 2.f * g_L_prev.z - g_L_prev2.z};
+  }
   Mat pers;
   Vec d;
   if (!main_camera_draw(globals, pers, d) || dot(d, d) < 1.f) return false;  // skinned draws only
@@ -1404,8 +1458,10 @@ void STDMETHODCALLTYPE on_unmap(ID3D11DeviceContext* c, ID3D11Resource* res, UIN
       if (p.res == res) {
         tally(p.data);  // the game has written the whole buffer by now
         note_look_at(p.data);
-        if (g_dump_state == 2) dump_draw(p.data);
+        const bool after = g_settings.dump_after;
+        if (g_dump_state == 2 && !after) dump_draw(p.data);
         note_depth(c, p.data, pose_snake(p.data));
+        if (g_dump_state == 2 && after) dump_draw(p.data);
         if (g_ovr_active) rewrite(p.data);
         p = {};
         break;

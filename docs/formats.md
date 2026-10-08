@@ -420,8 +420,16 @@ or a second skeleton. Static scenery draws have d = 0 and are placed by gVS_Mat0
 = world - L). No draw with Snake's bone rotations relative to origin 0 (an earlier dump's
 shadow-like draws) appeared in this frame.
 
-- **Snake's attachments (headband, hair, gear):** no separate actor. His headband/hair draws
-  (~620 mm above his object origin) use palettes relative to his object origin whose slots sit
-  near his head bone (3) but are their own small rig (~70 mm off his bones). Rigid gear draws use
-  single slots placing the model at its world position (relative to his object or the draw's
-  origin). Both are moved with the nearest joint's delta (render.cpp anchor_slot / move_with_anchor).
+- **Snake's attachments (headband, hair, gear):** no separate actor. His headband/hair rig is
+  drawn on its own origin (L + d), which the game puts at a fixed offset from his head joint
+  (bone 4): about (0, 85, -83) mm in head space (two pieces, 80 and 90 mm up). Its slots are
+  relative to that origin, and the tails are simulated by the game under gravity. While he rides
+  the rig's origin can be metres from the latest bone snapshot's object origin. The plugin moves
+  the rig's root onto our head + that offset and keeps the game's tail orientation
+  (translation only). Rigid gear draws use single slots placing the model at its world position
+  (relative to his object or the draw's origin) and move with the nearest joint's delta
+  (render.cpp anchor_slot / move_with_anchor).
+- **Snake's shadow:** not in the $Globals stream. After posing, no $Globals palette slot anywhere
+  in a frame is left on his game bones (`render dump_after 1` + `render palette now`), and there
+  are no UpdateSubresource writes; whatever draws the shadow (users see a running-cycle shape
+  under him) uses another constant buffer. Not found yet.
