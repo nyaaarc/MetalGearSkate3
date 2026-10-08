@@ -2473,6 +2473,7 @@ name = "skate-ffi"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "miniz_oxide",
  "serde_json",
  "skate-core",
  "skate-host",

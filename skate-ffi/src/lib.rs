@@ -13,6 +13,7 @@ use std::sync::Mutex;
 use skate_host::bridge::{Controls, Session};
 
 mod board;
+mod png;
 mod floor;
 mod geom;
 mod rails;
@@ -492,6 +493,74 @@ pub unsafe extern "C" fn mgsk_board_mesh(
             std::ptr::copy_nonoverlapping(part.vertices.as_ptr(), vertices, nv);
             std::ptr::copy_nonoverlapping(part.indices.as_ptr(), indices, ni);
         }
+        Ok(1)
+    })
+}
+
+/// The texture runs of board part `body` (`MGSK_BODY_*`): which board texture
+/// (`mgsk_board_texture`) draws which of its `mgsk_board_mesh` indices. Writes up to
+/// `max_ranges` and returns the part's range count (more than `max_ranges` means some were
+/// left out), or -1 on failure. Parses the GLB on every call: load once.
+///
+/// # Safety
+/// `assets_dir` is a NUL-terminated UTF-8 path; `ranges` has room for `max_ranges` (may be
+/// null when 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_board_ranges(
+    assets_dir: *const c_char,
+    body: u32,
+    ranges: *mut board::Range,
+    max_ranges: u32,
+) -> i32 {
+    guard(-1, || {
+        let parts = board::load(&path_from(assets_dir)?)?;
+        let part = parts.get(body as usize).ok_or_else(|| format!("no board body {body}"))?;
+        let n = part.ranges.len().min(max_ranges as usize);
+        if n > 0 {
+            if ranges.is_null() {
+                return Err("null ranges".into());
+            }
+            unsafe { std::ptr::copy_nonoverlapping(part.ranges.as_ptr(), ranges, n) };
+        }
+        count_i32(part.ranges.len())
+    })
+}
+
+/// Board texture `texture` (a `MgskBoardRange::texture`): the base colour of that board
+/// material in skater.glb, as RGBA8 rows from the top (glTF UV (0,0) is the top-left texel).
+/// Sets `*out_width`/`*out_height` and copies the pixels only if `capacity` (bytes) fits
+/// width*height*4. Returns 1 if copied, 0 if only the size was reported, -1 on failure
+/// (including no such texture). Parses the GLB and decodes the image on every call.
+///
+/// # Safety
+/// `assets_dir` is a NUL-terminated UTF-8 path; `rgba` has room for `capacity` bytes (may be
+/// null when 0); `out_width` and `out_height` are valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_board_texture(
+    assets_dir: *const c_char,
+    texture: u32,
+    rgba: *mut u8,
+    capacity: u32,
+    out_width: *mut u32,
+    out_height: *mut u32,
+) -> i32 {
+    guard(-1, || {
+        if out_width.is_null() || out_height.is_null() {
+            return Err("null out".into());
+        }
+        let textures = board::textures(&path_from(assets_dir)?)?;
+        let t = textures.get(texture as usize).ok_or_else(|| format!("no board texture {texture}"))?;
+        unsafe {
+            *out_width = t.width;
+            *out_height = t.height;
+        }
+        if t.rgba.len() > capacity as usize {
+            return Ok(0);
+        }
+        if rgba.is_null() {
+            return Err("null rgba".into());
+        }
+        unsafe { std::ptr::copy_nonoverlapping(t.rgba.as_ptr(), rgba, t.rgba.len()) };
         Ok(1)
     })
 }

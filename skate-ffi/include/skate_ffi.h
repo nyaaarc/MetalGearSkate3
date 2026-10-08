@@ -42,6 +42,13 @@ typedef struct MgskBoardVertex {
 
 typedef char mgsk_board_vertex_size_check[sizeof(MgskBoardVertex) == 32 ? 1 : -1];
 
+/* A run of a board part's mgsk_board_mesh indices drawn with board texture `texture`. */
+typedef struct MgskBoardRange {
+  uint32_t texture;
+  uint32_t first_index;
+  uint32_t index_count;
+} MgskBoardRange;
+
 /* Static string identifying this build. Never null. */
 const char* mgsk_version(void);
 /* Message for the last failure on this thread. Never null; empty if none. */
@@ -111,6 +118,17 @@ int mgsk_board_pose(const MgskSession* session, float* out, uint32_t max_bodies)
  * every call: load once. */
 int mgsk_board_mesh(const char* assets_dir, uint32_t body, MgskBoardVertex* vertices, uint32_t max_vertices,
                     uint16_t* indices, uint32_t max_indices, uint32_t* out_vertices, uint32_t* out_indices);
+/* The texture runs of board part `body`: which mgsk_board_texture draws which of its
+ * mgsk_board_mesh indices (the part's indices are grouped by texture). Writes up to max_ranges;
+ * returns the part's range count, or -1 on failure. Parses the file on every call: load once. */
+int mgsk_board_ranges(const char* assets_dir, uint32_t body, MgskBoardRange* ranges, uint32_t max_ranges);
+/* Board texture `texture` (a MgskBoardRange.texture), the base colour of that board material in
+ * skater.glb: RGBA8 rows from the top (uv (0,0) is the top-left texel). Sets *out_width and
+ * *out_height and copies the pixels only if `capacity` (bytes) fits width*height*4. Returns 1 if
+ * copied, 0 if only the size was reported, -1 on failure (or no such texture). Decodes the
+ * image on every call: load once. */
+int mgsk_board_texture(const char* assets_dir, uint32_t texture, uint8_t* rgba, uint32_t capacity,
+                       uint32_t* out_width, uint32_t* out_height);
 /* Copies the skater's state name (the engine's player state; a grind state while grinding),
  * NUL-terminated and truncated to fit capacity bytes. Returns its full length, or -1. */
 int mgsk_state(const MgskSession* session, char* out, uint32_t capacity);

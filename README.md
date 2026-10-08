@@ -23,7 +23,7 @@ no board or skating animation yet. See "What works" below.
 Put `MetalGearSkate.asi`, `skate_ffi.dll` and a `MetalGearSkate.ini` (see
 `mgs3-plugin/MetalGearSkate.example.ini`) in the game's `plugins` folder, load a flat stage such as
 Groznyj Grad (`s091a`), and press **F5** to start or stop skating with an Xbox controller.
-The stage's real collision is loaded on F5; the board is drawn in flat colours, Snake takes the skater's pose, and the view switches to Skate 3's chase camera.
+The stage's real collision is loaded on F5; the board is drawn with Skate 3's own textures, Snake takes the skater's pose, and the view switches to Skate 3's chase camera.
 
 ## Repository layout
 
@@ -84,7 +84,7 @@ The stage's real collision is loaded on F5; the board is drawn in flat colours, 
 
 - A stable lookup for the camera and skeleton
 - Snake's gear (separate model) still follows the game's own animation while skating
-- Drawing the board in game: flat colours only
+- Board textures not yet checked in game (simple diffuse lighting, no specular)
 - Setup (finding MGS3, converting your Skate 3 files), settings menu, audio
 
 ## Credits

@@ -356,3 +356,16 @@ MGS1's HZD (FoxdieTeam/mgs_reversing `fmt_hzd.h`) is not the layout; vocabulary 
   swap board ends). Off until MGS3's handedness is settled.
 - **Check:** `python -I tools/retarget_check.py <assets> <sna_def.mdl> --png out.png` (stick
   figures, bone lengths, ankle gap, limb directions). Unit tests: `cargo test retarget`.
+
+## Board textures (`skater.glb`)
+
+The converter embeds the textures as PNG (8-bit RGBA, non-interlaced) in buffer views of
+`private/skater.glb`. The board uses three of the ten materials, all opaque with a white base
+colour factor: `Retail_SkateBoard` (deck and grip, 512x512: grip tape on the top half, the
+bottom graphic below it, edge wood on the right), `Retail_SkateTruck` (128x128, also the deck
+part's baseplates) and `Retail_SkateWheel` (128x128). Their alpha channel is not coverage
+(means 62 and 28), so it is ignored. `mgsk_board_ranges` gives each board part's index runs per
+texture (slots are the board materials in glTF order: 0 deck, 1 truck, 2 wheel) and
+`mgsk_board_texture` the decoded RGBA8; UVs are glTF's (0,0 = top-left texel), all within [0, 1].
+The plugin builds a box-filtered mip chain and samples them as UNORM (the game's back buffer is
+UNORM, gamma-space).

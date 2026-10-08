@@ -59,6 +59,7 @@ struct Settings {
   bool depth_game = true;    // hide behind the scene's depth buffer (copied at Present), else draw over it
   float depth_bias = 0.002f; // relative: the scene must be this much nearer to hide the board
   bool depth_debug = false;  // log the scene's depth under the deck and the deck's own, once a second
+  bool textures = true;      // the board's Skate 3 textures (when the DLL has them), else flat colours
   bool debug = false;        // marker + axes at Snake's position, skating or not
   // skate: while skating, the whole frame is drawn from the Skate 3 engine's chase camera (the
   //        game's camera constants are rewritten), otherwise as `game`;
@@ -77,13 +78,13 @@ Settings settings() {
 }
 
 std::string describe(const Settings& s) {
-  char text[320];
+  char text[352];
   snprintf(text, sizeof(text),
            "camera=%s skate_fov_deg=%.1f fov_deg=%.2f near_mm=%.1f far_mm=%.0f aspect=%.4f flip_z=%d depth_game=%d "
-           "depth_bias=%.4f depth_debug=%d debug=%d",
+           "depth_bias=%.4f depth_debug=%d textures=%d debug=%d",
            s.camera == Settings::Camera::Skate ? "skate" : s.camera == Settings::Camera::Game ? "game" : "object",
            s.skate_fov_deg, s.fov_deg, s.near_mm, s.far_mm, s.aspect, s.flip_z ? 1 : 0,
-           s.depth_game ? 1 : 0, s.depth_bias, s.depth_debug ? 1 : 0, s.debug ? 1 : 0);
+           s.depth_game ? 1 : 0, s.depth_bias, s.depth_debug ? 1 : 0, s.textures ? 1 : 0, s.debug ? 1 : 0);
   return text;
 }
 
@@ -113,6 +114,7 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
   else if (key == "depth_game") ok = parse_bool(value, n.depth_game);
   else if (key == "depth_bias") ok = parse_float(value, n.depth_bias) && n.depth_bias > -0.5f && n.depth_bias < 0.5f;
   else if (key == "depth_debug") ok = parse_bool(value, n.depth_debug);
+  else if (key == "textures") ok = parse_bool(value, n.textures);
   else if (key == "debug") ok = parse_bool(value, n.debug);
   else if (key == "camera") {
     ok = true;
@@ -122,7 +124,7 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
     else ok = false;
   }
   else if (key == "skate_fov_deg") ok = parse_float(value, n.skate_fov_deg) && n.skate_fov_deg >= 0.f && n.skate_fov_deg < 170.f;
-  else return "unknown key (camera skate_fov_deg fov_deg near_mm far_mm aspect flip_z depth_game depth_bias depth_debug debug)";
+  else return "unknown key (camera skate_fov_deg fov_deg near_mm far_mm aspect flip_z depth_game depth_bias depth_debug textures debug)";
   if (!ok) return "bad value for " + key;
   s = n;
   return "";
@@ -131,7 +133,7 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
 void load_settings(const std::filesystem::path& ini) {
   Settings s;
   for (const char* key : {"camera", "skate_fov_deg", "fov_deg", "near_mm", "far_mm", "aspect", "flip_z", "depth_game",
-                          "depth_bias", "depth_debug", "debug"}) {
+                          "depth_bias", "depth_debug", "textures", "debug"}) {
     char value[64] = {};
     GetPrivateProfileStringA("render", key, "", value, sizeof(value), ini.string().c_str());
     if (!*value) continue;
@@ -257,6 +259,87 @@ std::vector<uint16_t> g_indices;
 Range g_cube;
 Range g_parts[skate::kBoardBodies];
 bool g_board_loaded = false;
+// The board's textures (mgsk_board_texture, RGBA8, with a mip chain built here) and, per part,
+// the runs of its indices each texture draws (mgsk_board_ranges). Empty with an older DLL or if
+// loading fails: then the parts are drawn in flat colours.
+struct BoardTexture {
+  uint32_t width = 0, height = 0;
+  std::vector<std::vector<uint8_t>> mips;  // level 0 first, RGBA8 rows from the top
+};
+std::vector<BoardTexture> g_board_textures;
+struct TexturedRange {
+  Range range;
+  uint32_t texture = 0;
+};
+std::vector<TexturedRange> g_part_runs[skate::kBoardBodies];
+
+// Box-filtered mip chain down to 1x1 (keeps the deck's grip and graphic from shimmering far off).
+std::vector<std::vector<uint8_t>> build_mips(uint32_t w, uint32_t h, std::vector<uint8_t> base) {
+  std::vector<std::vector<uint8_t>> mips;
+  mips.push_back(std::move(base));
+  while (w > 1 || h > 1) {
+    const uint32_t nw = std::max(1u, w / 2), nh = std::max(1u, h / 2);
+    const std::vector<uint8_t>& src = mips.back();
+    std::vector<uint8_t> dst(static_cast<size_t>(nw) * nh * 4);
+    for (uint32_t y = 0; y < nh; ++y) {
+      for (uint32_t x = 0; x < nw; ++x) {
+        const uint32_t x0 = std::min(2 * x, w - 1), x1 = std::min(2 * x + 1, w - 1);
+        const uint32_t y0 = std::min(2 * y, h - 1), y1 = std::min(2 * y + 1, h - 1);
+        for (uint32_t c = 0; c < 4; ++c) {
+          const auto at = [&](uint32_t px, uint32_t py) { return src[(static_cast<size_t>(py) * w + px) * 4 + c]; };
+          dst[(static_cast<size_t>(y) * nw + x) * 4 + c] =
+              static_cast<uint8_t>((at(x0, y0) + at(x1, y0) + at(x0, y1) + at(x1, y1) + 2) / 4);
+        }
+      }
+    }
+    mips.push_back(std::move(dst));
+    w = nw;
+    h = nh;
+  }
+  return mips;
+}
+
+// Texture runs and textures for the loaded parts; on any failure, none (flat colours).
+void load_board_textures(HMODULE ffi, const std::string& assets, const char* (*last_error)()) {
+  const auto ranges_fn = reinterpret_cast<decltype(&mgsk_board_ranges)>(GetProcAddress(ffi, "mgsk_board_ranges"));
+  const auto texture_fn = reinterpret_cast<decltype(&mgsk_board_texture)>(GetProcAddress(ffi, "mgsk_board_texture"));
+  if (!ranges_fn || !texture_fn) {
+    log("render: skate_ffi.dll has no board textures (mgsk_board_ranges/mgsk_board_texture); flat colours");
+    return;
+  }
+  auto give_up = [&](const char* what) {
+    log("render: board textures: %s failed (%s); flat colours", what, last_error ? last_error() : "?");
+    for (auto& runs : g_part_runs) runs.clear();
+    g_board_textures.clear();
+  };
+  uint32_t textures = 0;
+  for (uint32_t body = 0; body < skate::kBoardBodies; ++body) {
+    MgskBoardRange ranges[8];
+    const int n = ranges_fn(assets.c_str(), body, ranges, 8);
+    if (n <= 0 || n > 8) return give_up("mgsk_board_ranges");
+    const Range& part = g_parts[body];
+    for (int i = 0; i < n; ++i) {
+      if (ranges[i].first_index + ranges[i].index_count > part.index_count) return give_up("a texture run");
+      g_part_runs[body].push_back(
+          {{part.start_index + ranges[i].first_index, ranges[i].index_count, part.base_vertex}, ranges[i].texture});
+      textures = std::max(textures, ranges[i].texture + 1);
+    }
+  }
+  for (uint32_t t = 0; t < textures; ++t) {
+    uint32_t w = 0, h = 0;
+    if (texture_fn(assets.c_str(), t, nullptr, 0, &w, &h) != 0 || !w || !h || w > 4096 || h > 4096) {
+      return give_up("mgsk_board_texture size");
+    }
+    std::vector<uint8_t> rgba(static_cast<size_t>(w) * h * 4);
+    if (texture_fn(assets.c_str(), t, rgba.data(), static_cast<uint32_t>(rgba.size()), &w, &h) != 1) {
+      return give_up("mgsk_board_texture");
+    }
+    // Opaque materials: the converter's alpha channel isn't coverage.
+    for (size_t i = 3; i < rgba.size(); i += 4) rgba[i] = 255;
+    g_board_textures.push_back({w, h, build_mips(w, h, std::move(rgba))});
+  }
+  log("render: board textures loaded: %u", textures);
+}
 
 Range append(const std::vector<MgskBoardVertex>& v, const std::vector<uint16_t>& i) {
   Range r{static_cast<UINT>(g_indices.size()), static_cast<UINT>(i.size()), static_cast<INT>(g_vertices.size())};
@@ -319,6 +402,7 @@ void load_board(HMODULE ffi, const std::string& assets) {
   }
   g_board_loaded = true;
   log("render: board meshes loaded, %u triangles", total);
+  load_board_textures(ffi, assets, last_error);
 }
 
 // ---- shaders ---------------------------------------------------------------------------------
@@ -332,15 +416,19 @@ cbuffer Draw : register(b0) {
   // 1 single-sampled scene depth in t0, 2 multisampled in t1).
   float4 depth_params;
   float4 depth_extra;  // x: scene sample count, yz: probe pixel (scene pixels)
+  float4 material;     // x: 1 = colour is board_tex (t2) times color.rgb, 0 = color.rgb alone
 };
 Texture2D<float> scene_depth : register(t0);
 Texture2DMS<float> scene_depth_ms : register(t1);
+Texture2D board_tex : register(t2);
+SamplerState board_sampler : register(s0);
 struct VsIn { float3 pos : POSITION; float3 normal : NORMAL; float2 uv : TEXCOORD0; };
-struct VsOut { float4 pos : SV_Position; float3 normal : NORMAL; };
+struct VsOut { float4 pos : SV_Position; float3 normal : NORMAL; float2 uv : TEXCOORD0; };
 VsOut vs_main(VsIn v) {
   VsOut o;
   o.pos = mul(mvp, float4(v.pos, 1));
   o.normal = mul((float3x3)world, v.normal);
+  o.uv = v.uv;
   return o;
 }
 // The scene's depth at a pixel. MGS3's depth is reversed (k / distance, nearer = larger); of a
@@ -359,7 +447,9 @@ float4 ps_main(VsOut v) : SV_Target {
   if (depth_params.w > 0.5 && scene_at(int2(v.pos.xy * depth_params.xy)) > v.pos.z * (1 + depth_params.z)) discard;
   float3 l = normalize(float3(0.3, 1.0, 0.2));
   float shade = 0.45 + 0.55 * saturate(dot(normalize(v.normal), l));
-  return float4(color.rgb * shade, 1);
+  float3 base = color.rgb;
+  if (material.x > 0.5) base *= board_tex.Sample(board_sampler, v.uv).rgb;
+  return float4(base * shade, 1);
 }
 // `render depth_debug`: one triangle over a 1x1 target that reads the scene depth at a pixel.
 float4 vs_probe(uint id : SV_VertexID) : SV_Position {
@@ -403,6 +493,7 @@ struct DrawConstants {
   float color[4];
   float depth_params[4];  // see the shader's cbuffer
   float depth_extra[4];
+  float material[4];      // x: textured
 };
 
 struct Gpu {
@@ -428,8 +519,50 @@ struct Gpu {
   ComPtr<ID3D11PixelShader> ps_probe;
   ComPtr<ID3D11Texture2D> probe, probe_staging;
   ComPtr<ID3D11RenderTargetView> probe_rtv;
+  // The board's textures (g_board_textures order); empty = flat colours.
+  std::vector<ComPtr<ID3D11ShaderResourceView>> board_srvs;
+  ComPtr<ID3D11SamplerState> sampler;
 };
 Gpu g_gpu;
+
+// Board textures and their sampler. False leaves the board flat-coloured (not an error).
+bool create_board_textures(ID3D11Device* d) {
+  Gpu& g = g_gpu;
+  g.board_srvs.clear();
+  if (g_board_textures.empty()) return false;
+  D3D11_SAMPLER_DESC sd{};
+  sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+  sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+  sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
+  sd.MaxLOD = D3D11_FLOAT32_MAX;
+  if (FAILED(d->CreateSamplerState(&sd, &g.sampler))) return false;
+  for (const BoardTexture& t : g_board_textures) {
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = t.width;
+    td.Height = t.height;
+    td.MipLevels = static_cast<UINT>(t.mips.size());
+    td.ArraySize = 1;
+    // The game draws in gamma space (UNORM back buffer), so the sRGB texels go through as they are.
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_IMMUTABLE;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    std::vector<D3D11_SUBRESOURCE_DATA> init(t.mips.size());
+    for (size_t level = 0; level < t.mips.size(); ++level) {
+      init[level] = {t.mips[level].data(), std::max(1u, t.width >> level) * 4, 0};
+    }
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    if (FAILED(d->CreateTexture2D(&td, init.data(), &texture)) ||
+        FAILED(d->CreateShaderResourceView(texture.Get(), nullptr, &srv))) {
+      log("render: board texture %ux%u could not be created; flat colours", t.width, t.height);
+      g.board_srvs.clear();
+      return false;
+    }
+    g.board_srvs.push_back(srv);
+  }
+  return true;
+}
 
 bool create_gpu(ID3D11Device* d) {
   Gpu& g = g_gpu;
@@ -495,7 +628,9 @@ bool create_gpu(ID3D11Device* d) {
   dd.DepthFunc = D3D11_COMPARISON_LESS;
   if (FAILED(d->CreateDepthStencilState(&dd, &g.depth_own))) return false;
   dd.DepthFunc = D3D11_COMPARISON_GREATER;
-  return SUCCEEDED(d->CreateDepthStencilState(&dd, &g.depth_own_rev));
+  if (FAILED(d->CreateDepthStencilState(&dd, &g.depth_own_rev))) return false;
+  create_board_textures(d);
+  return true;
 }
 
 bool ensure_gpu(ID3D11Device* d) {
@@ -556,7 +691,8 @@ struct SavedState {
   ComPtr<ID3D11HullShader> hs;
   ComPtr<ID3D11DomainShader> ds;
   ComPtr<ID3D11Buffer> vs_cb, ps_cb;
-  ComPtr<ID3D11ShaderResourceView> ps_srvs[2];
+  ComPtr<ID3D11ShaderResourceView> ps_srvs[3];
+  ComPtr<ID3D11SamplerState> ps_sampler;
   ComPtr<ID3D11RasterizerState> rs;
   UINT viewport_count = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
   D3D11_VIEWPORT viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE]{};
@@ -581,9 +717,10 @@ void save(ID3D11DeviceContext* c, SavedState& s) {
   c->DSGetShader(&s.ds, nullptr, nullptr);
   c->VSGetConstantBuffers(0, 1, &s.vs_cb);
   c->PSGetConstantBuffers(0, 1, &s.ps_cb);
-  ID3D11ShaderResourceView* srvs[2] = {};
-  c->PSGetShaderResources(0, 2, srvs);
-  for (int i = 0; i < 2; ++i) s.ps_srvs[i].Attach(srvs[i]);
+  ID3D11ShaderResourceView* srvs[3] = {};
+  c->PSGetShaderResources(0, 3, srvs);
+  for (int i = 0; i < 3; ++i) s.ps_srvs[i].Attach(srvs[i]);
+  c->PSGetSamplers(0, 1, &s.ps_sampler);
   c->RSGetState(&s.rs);
   c->RSGetViewports(&s.viewport_count, s.viewports);
   c->OMGetBlendState(&s.blend, s.blend_factor, &s.sample_mask);
@@ -606,8 +743,10 @@ void restore(ID3D11DeviceContext* c, SavedState& s) {
   ID3D11Buffer* ps_cb = s.ps_cb.Get();
   c->VSSetConstantBuffers(0, 1, &vs_cb);
   c->PSSetConstantBuffers(0, 1, &ps_cb);
-  ID3D11ShaderResourceView* srvs[2] = {s.ps_srvs[0].Get(), s.ps_srvs[1].Get()};
-  c->PSSetShaderResources(0, 2, srvs);
+  ID3D11ShaderResourceView* srvs[3] = {s.ps_srvs[0].Get(), s.ps_srvs[1].Get(), s.ps_srvs[2].Get()};
+  c->PSSetShaderResources(0, 3, srvs);
+  ID3D11SamplerState* sampler = s.ps_sampler.Get();
+  c->PSSetSamplers(0, 1, &sampler);
   c->DSSetShader(s.ds.Get(), nullptr, 0);
   c->HSSetShader(s.hs.Get(), nullptr, 0);
   c->GSSetShader(s.gs.Get(), nullptr, 0);
@@ -1293,7 +1432,9 @@ struct DepthTest {
 };
 DepthTest g_depth_test;
 
-void draw(ID3D11DeviceContext* c, const Mat& vp, const Mat& world, const float rgb255[3], const Range& r) {
+// With `texture`, the colour is that board texture times rgb255 (white = the texture as is).
+void draw(ID3D11DeviceContext* c, const Mat& vp, const Mat& world, const float rgb255[3], const Range& r,
+          ID3D11ShaderResourceView* texture = nullptr) {
   D3D11_MAPPED_SUBRESOURCE mapped;
   if (FAILED(c->Map(g_gpu.cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return;
   DrawConstants k;
@@ -1303,8 +1444,11 @@ void draw(ID3D11DeviceContext* c, const Mat& vp, const Mat& world, const float r
   k.color[3] = 1.f;
   memcpy(k.depth_params, g_depth_test.params, sizeof(k.depth_params));
   memcpy(k.depth_extra, g_depth_test.extra, sizeof(k.depth_extra));
+  k.material[0] = texture ? 1.f : 0.f;
+  k.material[1] = k.material[2] = k.material[3] = 0.f;
   memcpy(mapped.pData, &k, sizeof(k));
   c->Unmap(g_gpu.cb.Get(), 0);
+  if (texture) c->PSSetShaderResources(2, 1, &texture);
   c->DrawIndexed(r.index_count, r.start_index, r.base_vertex);
 }
 
@@ -1569,6 +1713,9 @@ void frame(IDXGISwapChain* swap) {
   ID3D11Buffer* cb = g_gpu.cb.Get();
   c->VSSetConstantBuffers(0, 1, &cb);
   c->PSSetConstantBuffers(0, 1, &cb);
+  ID3D11SamplerState* sampler = g_gpu.sampler.Get();
+  c->PSSetSamplers(0, 1, &sampler);
+  const bool textured = s.textures && !g_gpu.board_srvs.empty();
 
   // Engine metres -> MGS3 millimetres, same axes.
   const Mat to_mm = place({0.f, 0.f, 0.f}, {kMmPerUnit, kMmPerUnit, kMmPerUnit});
@@ -1579,7 +1726,14 @@ void frame(IDXGISwapChain* swap) {
       memcpy(local.m, pose + body * 16, sizeof(local.m));
       const Mat world = mul(to_mm, local);
       if (body == MGSK_BODY_DECK) deck = {world.at(0, 3), world.at(1, 3), world.at(2, 3)};
-      draw(c.Get(), vp, world, part_color(body), g_parts[body]);
+      if (textured && !g_part_runs[body].empty()) {
+        constexpr float kWhite[3] = {255, 255, 255};
+        for (const TexturedRange& run : g_part_runs[body]) {
+          draw(c.Get(), vp, world, kWhite, run.range, g_gpu.board_srvs[run.texture].Get());
+        }
+      } else {
+        draw(c.Get(), vp, world, part_color(body), g_parts[body]);
+      }
     }
   }
   const Vec at_snake{snake.x, snake.y, snake.z};

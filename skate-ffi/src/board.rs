@@ -24,10 +24,28 @@ pub struct Vertex {
     pub uv: [f32; 2],
 }
 
+/// A run of a part's indices drawn with one texture; layout shared with `MgskBoardRange`.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct Range {
+    pub texture: u32,
+    pub first_index: u32,
+    pub index_count: u32,
+}
+
 #[derive(Default)]
 pub struct Part {
     pub vertices: Vec<Vertex>,
+    /// Grouped by texture, in `ranges` order.
     pub indices: Vec<u16>,
+    pub ranges: Vec<Range>,
+}
+
+/// A board texture, RGBA8 rows top to bottom (glTF's UV origin is the image's top-left).
+pub struct Texture {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
 }
 
 /// GLB joint name of each engine body, in `BodyId` order.
@@ -116,6 +134,8 @@ pub fn load(assets: &Path) -> Result<[Part; 7], String> {
     let local_from_model: [Mat; 7] = std::array::from_fn(|i| mul(&local_from_deck(&rest[i]), &deck_from_model));
 
     let mut parts: [Part; 7] = Default::default();
+    // Per part, runs of (glTF material, triangle indices); merged into `indices` and `ranges` below.
+    let mut by_material: [Vec<(usize, Vec<u16>)>; 7] = Default::default();
     let primitives = glb.json["meshes"][0]["primitives"].as_array().ok_or("skater.glb has no mesh")?;
     for primitive in primitives {
         let attributes = &primitive["attributes"];
@@ -137,6 +157,7 @@ pub fn load(assets: &Path) -> Result<[Part; 7], String> {
         let normals = glb.components(index(&attributes["NORMAL"])?)?;
         let uvs = glb.components(index(&attributes["TEXCOORD_0"])?)?;
         let indices = glb.components(index(&primitive["indices"])?)?;
+        let material = material_of(primitive);
         let count = body.len();
         if positions.len() != count * 3 || normals.len() != count * 3 || uvs.len() != count * 2 {
             return Err("skater.glb: vertex streams disagree".into());
@@ -170,7 +191,27 @@ pub fn load(assets: &Path) -> Result<[Part; 7], String> {
                         uv: [uv[0], uv[1]],
                     });
                 }
-                part.indices.push(remap[v][b]);
+                let runs = &mut by_material[b];
+                if runs.last().is_none_or(|(m, _)| *m != material) {
+                    runs.push((material, Vec::new()));
+                }
+                runs.last_mut().unwrap().1.push(remap[v][b]);
+            }
+        }
+    }
+    // Texture slots: the board's materials in glTF order (as `textures` returns them).
+    let mut materials: Vec<usize> = by_material.iter().flatten().map(|(m, _)| *m).collect();
+    materials.sort_unstable();
+    materials.dedup();
+    for (part, runs) in parts.iter_mut().zip(by_material) {
+        for (texture, &material) in materials.iter().enumerate() {
+            let first = part.indices.len() as u32;
+            for (_, idx) in runs.iter().filter(|(m, _)| *m == material) {
+                part.indices.extend_from_slice(idx);
+            }
+            let index_count = part.indices.len() as u32 - first;
+            if index_count > 0 {
+                part.ranges.push(Range { texture: texture as u32, first_index: first, index_count });
             }
         }
     }
@@ -178,6 +219,80 @@ pub fn load(assets: &Path) -> Result<[Part; 7], String> {
         return Err(format!("{} has no skateboard triangles", path.display()));
     }
     Ok(parts)
+}
+
+fn material_of(primitive: &Value) -> usize {
+    primitive["material"].as_u64().map_or(usize::MAX, |m| m as usize)
+}
+
+/// The base-colour texture of each board material, in texture-slot order (`Range::texture`).
+/// A material without one gets a 1x1 texel of its base colour factor.
+pub fn textures(assets: &Path) -> Result<Vec<Texture>, String> {
+    let path = assets.join("private").join("skater.glb");
+    let parts = load(assets)?;
+    let slots = parts.iter().flat_map(|p| p.ranges.iter()).map(|r| r.texture as usize + 1).max().unwrap_or(0);
+    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let glb = Glb::parse(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    // The same material list `load` assigns slots from.
+    let used = board_materials(&glb)?;
+    if used.len() != slots {
+        return Err(format!("board materials ({}) and texture slots ({slots}) disagree", used.len()));
+    }
+    used.into_iter()
+        .map(|m| {
+            let pbr = &glb.json["materials"][m]["pbrMetallicRoughness"];
+            let factor: Vec<f64> = pbr["baseColorFactor"]
+                .as_array()
+                .map_or(vec![1.; 4], |a| a.iter().filter_map(Value::as_f64).collect());
+            let Some(tex) = pbr["baseColorTexture"]["index"].as_u64() else {
+                let texel = (0..4).map(|i| (factor.get(i).copied().unwrap_or(1.).clamp(0., 1.) * 255.).round() as u8).collect();
+                return Ok(Texture { width: 1, height: 1, rgba: texel });
+            };
+            let image = &glb.json["images"][index(&glb.json["textures"][tex as usize]["source"])?];
+            let data = glb.view(index(&image["bufferView"])?)?;
+            let (width, height, mut rgba) =
+                crate::png::decode(data).map_err(|e| format!("{}: board texture: {e}", path.display()))?;
+            if factor.iter().take(4).any(|&f| f != 1.) {
+                for px in rgba.chunks_exact_mut(4) {
+                    for (c, f) in px.iter_mut().zip(&factor) {
+                        *c = (f64::from(*c) * f).round().clamp(0., 255.) as u8;
+                    }
+                }
+            }
+            Ok(Texture { width, height, rgba })
+        })
+        .collect()
+}
+
+/// Materials of the primitives that hold board triangles (a vertex whose dominant joint is a
+/// board joint), sorted: the texture slots `load` assigns.
+fn board_materials(glb: &Glb) -> Result<Vec<usize>, String> {
+    let joints = glb.json["skins"][0]["joints"].as_array().ok_or("skin has no joints")?;
+    let board: Vec<bool> = joints
+        .iter()
+        .map(|j| {
+            index(j).is_ok_and(|n| glb.json["nodes"][n]["name"].as_str().is_some_and(|name| JOINTS.contains(&name)))
+        })
+        .collect();
+    let mut used = Vec::new();
+    for primitive in glb.json["meshes"][0]["primitives"].as_array().ok_or("skater.glb has no mesh")? {
+        let attributes = &primitive["attributes"];
+        let js = glb.components(index(&attributes["JOINTS_0"])?)?;
+        let ws = glb.components(index(&attributes["WEIGHTS_0"])?)?;
+        let indices = glb.components(index(&primitive["indices"])?)?;
+        let on_board = |v: usize| {
+            let (j, w) = (&js[v * 4..v * 4 + 4], &ws[v * 4..v * 4 + 4]);
+            let k = (0..4).fold(0, |best, k| if w[k] > w[best] { k } else { best });
+            board.get(j[k] as usize).copied().unwrap_or(false)
+        };
+        // `load` keeps a triangle when any corner is on the board.
+        if indices.chunks_exact(3).any(|t| t.iter().any(|&v| on_board(v as usize))) {
+            used.push(material_of(primitive));
+        }
+    }
+    used.sort_unstable();
+    used.dedup();
+    Ok(used)
 }
 
 pub(crate) fn index(value: &Value) -> Result<usize, String> {
@@ -206,6 +321,14 @@ impl<'a> Glb<'a> {
         let blob_start = 28 + json_len;
         let blob = bytes.get(blob_start..blob_start + word(20 + json_len)?).ok_or("truncated GLB binary")?;
         Ok(Self { json, blob })
+    }
+
+    /// The bytes of a buffer view (embedded images).
+    pub(crate) fn view(&self, view: usize) -> Result<&'a [u8], String> {
+        let v = &self.json["bufferViews"][view];
+        let start = v["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let len = index(&v["byteLength"])?;
+        self.blob.get(start..start + len).ok_or_else(|| "buffer view outside the GLB".to_string())
     }
 
     /// Every component of an accessor, widened to f64.
