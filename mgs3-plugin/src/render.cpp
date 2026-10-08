@@ -907,10 +907,10 @@ void pose_snake(uint8_t* globals) {
     g_skin.origin = {object[12], object[13], object[14]};
     if (g_skin.state < 0) return;
   }
-  const Vec O{g_L_frame.x + d.x, g_L_frame.y + d.y, g_L_frame.z + d.z};
-  const Vec off = O - g_skin.origin;
-  if (dot(off, off) > 4.f) return;  // not Snake's object
-  ++g_skin.draws;
+  // No check of the draw's own origin: some of Snake's draws (about 22 a frame, ~640 mm above his
+  // object) sit on another origin yet use palettes relative to his object's, and only his slots
+  // match his bones exactly, so matching alone picks them out.
+  const uint64_t posed_before = g_skin.posed;
   auto* palette = reinterpret_cast<float*>(globals + kPaletteOffset);
   for (UINT s = 0; s < kPaletteSlots; ++s) {
     float* slot = palette + s * 12;
@@ -936,6 +936,7 @@ void pose_snake(uint8_t* globals) {
     }
     ++g_skin.posed;
   }
+  if (g_skin.posed != posed_before) ++g_skin.draws;
 }
 
 void end_skin_frame() {
