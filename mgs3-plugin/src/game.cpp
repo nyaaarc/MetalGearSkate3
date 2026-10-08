@@ -71,7 +71,25 @@ SetAreaFn g_set_area = nullptr;
 ChangeScenarioFn g_change_scenario = nullptr;
 int* g_load_request = nullptr;
 uint8_t** g_linkvarbuf = nullptr;
-char g_pending_stage[16] = {};  // guarded by g_pad_mutex; empty = nothing pending
+char g_pending_stage[16] = {};
+
+// Logging hooks to learn how the game itself loads stages (developer menu, story flow), so the
+// harness can copy the exact arguments. Original functions are called through these.
+SafetyHookInline g_set_area_hook, g_change_scenario_hook;
+
+void __fastcall on_set_area(int id, const char* dirname) {
+  short result = 0;
+  int load_request = g_load_request ? *g_load_request : -1;
+  if (g_linkvarbuf && *g_linkvarbuf) memcpy(&result, *g_linkvarbuf + 2, sizeof(result));
+  log("game: GM_SetArea(id %d, \"%s\") GM_Result %d load_request %d", id, dirname ? dirname : "(null)", result,
+      load_request);
+  g_set_area_hook.call<void>(id, dirname);
+}
+
+void __fastcall on_change_scenario(unsigned int code) {
+  log("game: GCL_ChangeSenerioCode(0x%06X)", code);
+  g_change_scenario_hook.call<void>(code);
+}  // guarded by g_pad_mutex; empty = nothing pending
 
 // KCEJ string hash (24-bit rotate-and-add), as in MGSHDFix GameVars::GV_StrCode.
 constexpr uint32_t strcode(const char* text) {
@@ -90,6 +108,19 @@ void load_stage_now(const char* name) {
   memcpy(link + kLinkResult, &result, sizeof(result));
   *g_load_request = 3;
   log("game: loading stage %s", name);
+}
+
+// DualShock 2 pressure bytes in the source record: 12 bytes at +0x10 in the PS2 order right,
+// left, up, down, triangle, circle, cross, square, L1, R1, L2, R2 (a real Cross press reads
+// 0xFF at +0x16). Byte +6 reads 0x30 while a real button is held. The developer menu ignores
+// injected presses without these.
+constexpr size_t kSrcPressure = 0x10, kSrcHeldFlag = 0x06;
+constexpr uint16_t kPressureOrder[12] = {0x0020, 0x0080, 0x0010, 0x0040, 0x1000, 0x2000,
+                                         0x4000, 0x8000, 0x0400, 0x0800, 0x0100, 0x0200};
+
+void write_pressure(uint8_t* src, uint16_t buttons) {
+  for (int i = 0; i < 12; ++i) src[kSrcPressure + i] = (buttons & kPressureOrder[i]) ? 0xFF : 0x00;
+  src[kSrcHeldFlag] = buttons ? 0x30 : 0x00;
 }
 
 struct Injection {
@@ -112,6 +143,7 @@ void __fastcall on_pad_copy(uint8_t* dst, uint8_t* src) {
         Injection& step = g_inject.front();
         --step.frames;
         memcpy(src + 4, &step.buttons, sizeof(uint16_t));
+        write_pressure(src, step.buttons);
         memcpy(src + kSrcSticks, step.sticks, 4);
         memcpy(src + kSrcSticks2, step.sticks, 4);
       }
@@ -221,6 +253,11 @@ bool init() {
     g_load_request = reinterpret_cast<int*>(*scenario + 7 + disp);
   }
   if (const auto link = scan(kLinkVarBufSig)) g_linkvarbuf = reinterpret_cast<uint8_t**>(rip_target(*link + 3));
+  if (g_set_area) g_set_area_hook = safetyhook::create_inline(reinterpret_cast<void*>(g_set_area), reinterpret_cast<void*>(&on_set_area));
+  if (g_change_scenario) {
+    g_change_scenario_hook =
+        safetyhook::create_inline(reinterpret_cast<void*>(g_change_scenario), reinterpret_cast<void*>(&on_change_scenario));
+  }
   log("game: stage loading %s", g_set_area && g_change_scenario && g_load_request && g_linkvarbuf ? "ready" : "unavailable");
   log("game: Snake control pointer at exe+%llX (code exe+%llX)",
       static_cast<unsigned long long>(reinterpret_cast<uint8_t*>(g_snake_control) - exe),
