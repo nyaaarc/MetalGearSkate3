@@ -92,6 +92,10 @@ void __fastcall on_update(uint8_t* cam) {
     {
       std::lock_guard lock(g_snap_mutex);
       g_pending.valid = skate::frame_snapshot(c, g_pending.board, g_pending.snake, g_pending.tick);
+      // Not skating (no pose this update): the stored placements are a finished ride's.
+      if (!g_pending.valid) {
+        for (Snap& s : g_snaps) s.valid = false;
+      }
       have = g_pending.valid || skate::camera(c);
     }
     if (have) {
@@ -201,6 +205,12 @@ bool frame_pose_at(const float (&L)[3], float (&board)[skate::kBoardBodies * 16]
 }
 
 void set_coherent(bool on) { g_coherent = on; }
+
+void clear_poses() {
+  std::lock_guard lock(g_snap_mutex);
+  for (Snap& s : g_snaps) s.valid = false;
+  g_pending.valid = false;
+}
 
 bool camera_after(float (&eye)[3], float (&target)[3], float (&wrote_eye)[3], float (&wrote_target)[3]) {
   std::lock_guard lock(g_snap_mutex);

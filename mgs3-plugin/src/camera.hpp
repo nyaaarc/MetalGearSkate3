@@ -38,6 +38,10 @@ bool orbiting();
 bool frame_pose_at(const float (&L)[3], float (&board)[skate::kBoardBodies * 16], float (&snake)[57 * 16],
                    uint64_t& tick, float& error_mm);
 void set_coherent(bool on);  // `render coherent 0|1` (default on)
+
+// Forget the stored placements (skate off): without this the renderer kept posing Snake (and the
+// board) from the last ride's placements after skate off, drawing his body at the old spot.
+void clear_poses();
 bool coherent();
 // The pose tick the game camera was last placed from (0 = none), for diagnostics.
 uint64_t camera_tick();

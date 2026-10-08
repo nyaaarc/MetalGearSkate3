@@ -20,6 +20,7 @@
 #include "game.hpp"
 #include "log.hpp"
 #include "core_api.hpp"
+#include "camera.hpp"
 #include "pose.hpp"
 
 #pragma comment(lib, "xinput.lib")
@@ -543,10 +544,21 @@ DWORD WINAPI run(LPVOID) {
                     game_safe.at[2] * kMmPerUnit};
           log("skate: no game floor under Snake; handing him back at %.2f %.2f %.2f (m)", game_safe.at[0],
               game_safe.at[1], game_safe.at[2]);
+        } else if (snake && floor_fn) {
+          // While skating he's held at the board's ride height (the floor + ~887 mm); the game
+          // stands him at the floor + 800, and settling those few cm when it takes him back
+          // looked like a fall to the drop watch below. Put him on the floor under the board.
+          float floor_y = 0.f;
+          if (floor_fn(session, st.skater[0], st.skater[1] + 0.5f, st.skater[2], &floor_y) == 1 &&
+              st.skater[1] - floor_y < 0.5f) {
+            snake->y = floor_y * kMmPerUnit + kSnakeHeightMm;
+          }
         }
         game::block_input(false);
         pose::publish(nullptr);
-      stealth.end();
+        publish_pose(nullptr);
+        camera::clear_poses();
+        stealth.end();
         log("skate: off");
       } else if (!snake) {
         log("skate: no player to put on a board");
@@ -609,7 +621,7 @@ DWORD WINAPI run(LPVOID) {
     }
     // Caught early (any real drop in the first half second): once a fall has built up, MGS3
     // kills him even after he's moved onto solid ground.
-    constexpr float kOffDropMm = 40.f;
+    constexpr float kOffDropMm = 60.f;
     if (!skating && watch_ticks > 0 && snake) {
       --watch_ticks;
       if (watch_y - snake->y > kOffDropMm) {
