@@ -145,7 +145,9 @@ analogues to find, guided by the MGS2 patterns and the GirianSeed decomp.
   larger, no far plane) and the pair's product is the view-projection for the full back buffer.
   Skinned draws use a `gVS_Pers` with translation folded in. The game fills `$Globals` with
   `Map(WRITE_DISCARD)` per draw (~1500/frame on s091a), never `UpdateSubresource`. No depth
-  buffer is bound at Present. `g_View`/`g_ViewProjection` exist in the layout but are unused.
+  buffer is bound at Present; the scene's is the depth-stencil view bound while main-camera
+  draws fill `$Globals` (the plugin copies it at Present for the board; whether it still holds
+  the scene by then is unconfirmed). `g_View`/`g_ViewProjection` exist in the layout but are unused.
   Every main-camera `gVS_Pers` (rows 0, 1, 3 orthogonal, row 3 unit, row 2 = `(~0, ~0, ~0, k)`)
   factors as `S * T(d)`: S the frame's projection x view rotation, d = 0 for stage and rigid
   models (`gVS_Mat0 = T(-L) * world`, L = look-at) and an object origin minus L for skinned ones

@@ -80,7 +80,7 @@ The stage's real collision is loaded on F5; the board is drawn in flat colours, 
 
 - A stable lookup for the camera and skeleton
 - Feeding MGS3 collision to the skate world; Snake's gear (separate model) still follows the game's own animation while skating
-- Drawing the board in game: flat colours only, no scene occlusion (no depth buffer is bound at Present)
+- Drawing the board in game: flat colours only; scene occlusion (a copy of the scene's depth buffer) is untested in game
 - Setup (finding MGS3, converting your Skate 3 files), settings menu, audio
 
 ## Credits

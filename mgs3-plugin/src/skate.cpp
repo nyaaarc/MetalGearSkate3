@@ -32,6 +32,8 @@ constexpr float kSnakeHeightMm = 800.f;
 // Half-size of the stand-in floor, in engine units.
 constexpr float kFloorHalf = 150.f;
 constexpr int kToggleKey = VK_F5;
+// A skater this far (engine units) below where he last rode has left the stage's collision.
+constexpr float kFallLimit = 3.f;
 
 struct Ffi {
   decltype(&mgsk_session_new) session_new;
@@ -412,6 +414,11 @@ DWORD WINAPI run(LPVOID) {
     return true;
   };
   bool broken = false;  // the session failed: replace it before the next start
+  // Where the skater last rode on the ground (engine units, heading), for respawns.
+  struct Spot {
+    float at[3];
+    float heading;
+  } last_good{}, riding_spot{{}, NAN};
   Clock clock(period);
   for (;;) {
     clock.wait();
@@ -465,6 +472,8 @@ DWORD WINAPI run(LPVOID) {
           game::block_input(true);
           stealth.begin(stealth_enabled);
           ticks = 0;
+          last_good = {{at[0], at[1], at[2]}, heading};
+          riding_spot = {{}, NAN};
           log("skate: on at %.1f %.1f %.1f (mm), Snake yaw %d -> heading %.1f deg", snake->x, snake->y, snake->z,
               yaw ? *yaw : 0, heading * 180.f / std::numbers::pi_v<float>);
         }
@@ -490,10 +499,8 @@ DWORD WINAPI run(LPVOID) {
     if (f.tick(session, &pad) || f.root(session, m)) {
       log("skate: engine error: %s", f.last_error());
       // Carry on from the last good spot on a fresh session, like a bail respawn.
-      const float at[3] = {st.skater[0], st.skater[1], st.skater[2]};
-      const float heading = st.heading_deg * std::numbers::pi_v<float> / 180.f;
-      if (replace_session() && begin(at, heading)) {
-        log("skate: resumed at %.2f %.2f %.2f (m)", at[0], at[1], at[2]);
+      if (replace_session() && begin(last_good.at, last_good.heading)) {
+        log("skate: resumed at %.2f %.2f %.2f (m)", last_good.at[0], last_good.at[1], last_good.at[2]);
         continue;
       }
       broken = true;
@@ -503,6 +510,17 @@ DWORD WINAPI run(LPVOID) {
       pose::publish(nullptr);
       stealth.end();
       continue;
+    }
+    // Off the edge of the stage's collision the skater falls forever, and a Snake written far
+    // below the floor dies (game over). Put him back where he last rode instead.
+    if (m[13] < last_good.at[1] - kFallLimit) {
+      log("skate: fell to %.2f m below %.2f; back to %.2f %.2f %.2f (m)", m[13], last_good.at[1], last_good.at[0],
+          last_good.at[1], last_good.at[2]);
+      if (f.activate(session, last_good.at, last_good.heading) || f.root(session, m)) {
+        log("skate: respawn failed: %s", f.last_error());
+        continue;
+      }
+      riding_spot = {{}, NAN};
     }
     // Translation is the last column of the column-major root matrix.
     snake->x = m[12] * kMmPerUnit;
@@ -529,6 +547,12 @@ DWORD WINAPI run(LPVOID) {
     st.skater[1] = m[13];
     st.skater[2] = m[14];
     st.heading_deg = heading * 180.f / std::numbers::pi_v<float>;
+    // Respawn spot: a grounded position from 1-2 s ago, so it isn't the edge he just rolled off.
+    if (ticks % 60 == 0) {
+      if (!std::isnan(riding_spot.heading)) last_good = riding_spot;
+      const bool grounded = strstr(st.engine_state, "Ground") && !strstr(st.engine_state, "Wipeout");
+      riding_spot = grounded ? Spot{{m[12], m[13], m[14]}, heading} : Spot{{}, NAN};
+    }
     stealth.hold();
     if (posing) pose::publish(f.snake_pose(session, snake_bones, pose::kSnakeBones) == pose::kSnakeBones ? snake_bones : nullptr);
     set_status(st);
