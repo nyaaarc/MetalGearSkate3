@@ -323,6 +323,15 @@ links to next / previous record in 16 B units (0 = none), `+0x10` u32 id [?].
   Snake's walking space, so not solid — camera/area volumes?].
 - `0x2044` / `0x2043`: the same box layouts plus trailing packed data [?], layer 0x41 only [? purpose].
 - Material words seen: 0x10DC2, 0x810DC2, 0x10808000 (tree leaves), 0x292DF4, … [? bit meaning].
+- Bit `0x0200_0000` marks **invisible walls** [L, s091a]: 734 of 94,214 faces, 644 vertical,
+  most of them thin one-sided panels with nothing drawn: on the ends of barriers (e.g. two
+  0.88–3.0 m panels at x 36.4–36.6 m, z 3.38 and 6.50 on the 0.88 m barrier there), above
+  fences and walls (median bottom 2.5 m) and around the stage — anti-climb and boundary
+  blockers for Snake. Commonest words: 0x22010030 (312), 0x02020030 (80), 0x12010030,
+  0x22020030, 0x52010030. The skate chase camera collided with them (its line from the skater
+  to the eye snapped onto the panel: a 1.6 m jump in one tick during slow carves past that
+  barrier); `mgsk_install_geom` now gives the camera a world without them (the skater still
+  collides with them).
 
 **Section 1** starts with a table of 0x90 B entries laid out like `0x2005` entries (identity
 rotation, zero position, `+0x70` → run head), ending at a zero pointer [V]. Every instance

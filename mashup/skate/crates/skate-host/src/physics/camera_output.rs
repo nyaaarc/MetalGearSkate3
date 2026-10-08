@@ -68,7 +68,7 @@ pub(crate) fn advance(
         .advance(
             physics.settings.step.simulation.time_step,
             snapshot,
-            physics.world(),
+            physics.camera_world(),
             [gravity.x, gravity.y, gravity.z, 0.0],
             &environment,
             &mut StaticWorld,

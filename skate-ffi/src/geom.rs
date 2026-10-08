@@ -24,6 +24,9 @@ pub type Triangle = [[f32; 3]; 3];
 #[cfg_attr(not(test), allow(dead_code))]
 pub struct Decoded {
     pub triangles: Vec<Triangle>,
+    /// Each triangle's face material word (`+0x0C` of its 0x2012 face; the first face kept
+    /// when repeats are removed). Bit 0x0200_0000 marks MGS3's invisible walls.
+    pub materials: Vec<u32>,
     pub raw: usize,
     pub problems: BTreeMap<String, usize>,
 }
@@ -39,22 +42,23 @@ struct Reader<'a> {
 pub fn decode(data: &[u8]) -> Result<Decoded, String> {
     let mut r = Reader { d: data, problems: BTreeMap::new() };
     let mut seen = HashSet::new();
-    let (mut triangles, mut raw) = (Vec::new(), 0);
+    let (mut triangles, mut materials, mut raw) = (Vec::new(), Vec::new(), 0);
     for group in r.groups()? {
         if r.u16(group)? & 0xF0 != LAYER_SOLID {
             continue;
         }
-        for tri in r.solid_triangles(group, None)? {
+        for (tri, material) in r.solid_triangles(group, None)? {
             raw += 1;
             // The same triangle is reached from several cells; geom.py keys on the
             // vertices rounded to 1 mm (half to even, -0 distinct from 0).
             let key = tri.map(|p| p.map(|c| c.round_ties_even().to_bits()));
             if seen.insert(key) {
                 triangles.push(tri.map(|p| p.map(|c| c as f32)));
+                materials.push(material);
             }
         }
     }
-    Ok(Decoded { triangles, raw, problems: r.problems })
+    Ok(Decoded { triangles, materials, raw, problems: r.problems })
 }
 
 impl Reader<'_> {
@@ -163,7 +167,7 @@ impl Reader<'_> {
     }
 
     /// World triangles of one solid group, following instances one level deep.
-    fn solid_triangles(&mut self, group: usize, xform: Option<&Xform>) -> Result<Vec<[[f64; 3]; 3]>, String> {
+    fn solid_triangles(&mut self, group: usize, xform: Option<&Xform>) -> Result<Vec<([[f64; 3]; 3], u32)>, String> {
         let mut out = Vec::new();
         for mut rec in self.chain(group)? {
             let mut kind = self.u16(rec)?;
@@ -182,9 +186,9 @@ impl Reader<'_> {
             }
             if kind == REC_MESH {
                 let mesh = self.mesh(rec)?;
-                out.extend(mesh.into_iter().map(|tri| match xform {
-                    Some(x) => tri.map(|p| transform(x, p)),
-                    None => tri,
+                out.extend(mesh.into_iter().map(|(tri, material)| match xform {
+                    Some(x) => (tri.map(|p| transform(x, p)), material),
+                    None => (tri, material),
                 }));
             } else if kind == REC_INSTANCES && xform.is_none() {
                 for (x, shape) in self.instances(rec)? {
@@ -201,7 +205,7 @@ impl Reader<'_> {
 
     /// 0x2012: 0x30-byte faces from +0x20, each with six u32 offsets relative to the face at
     /// +0x10 (v0..v3, normal, pool origin). v3 == v0 marks a triangle, else a planar quad.
-    fn mesh(&mut self, rec: usize) -> Result<Vec<[[f64; 3]; 3]>, String> {
+    fn mesh(&mut self, rec: usize) -> Result<Vec<([[f64; 3]; 3], u32)>, String> {
         let mut out = Vec::new();
         for j in 0..self.count(rec)? {
             let s = rec + 0x20 + 0x30 * j;
@@ -214,6 +218,7 @@ impl Reader<'_> {
                 continue;
             }
             let quad = offs[3] != offs[0];
+            let material = self.u32(s + 0x0C)?;
             let origin = self.f32x3(s + offs[5])?;
             let mut p = [[0f64; 3]; 4];
             let mut untagged = false;
@@ -229,9 +234,9 @@ impl Reader<'_> {
             if untagged {
                 self.problem("face vertex not tagged 1");
             }
-            out.push([p[0], p[1], p[2]]);
+            out.push(([p[0], p[1], p[2]], material));
             if quad {
-                out.push([p[0], p[2], p[3]]);
+                out.push(([p[0], p[2], p[3]], material));
             }
         }
         Ok(out)

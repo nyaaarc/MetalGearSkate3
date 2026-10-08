@@ -206,10 +206,18 @@ fn path_from(path: *const c_char) -> Result<PathBuf, String> {
 
 /// The solid triangles of an MGS3 `.geom` file, in millimetres on the game's axes.
 fn read_geom(path: *const c_char) -> Result<Vec<geom::Triangle>, String> {
+    Ok(read_geom_decoded(path)?.triangles)
+}
+
+/// As `read_geom`, with each triangle's face material.
+fn read_geom_decoded(path: *const c_char) -> Result<geom::Decoded, String> {
     let path = path_from(path)?;
     let data = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(geom::decode(&data).map_err(|e| format!("{}: {e}", path.display()))?.triangles)
+    geom::decode(&data).map_err(|e| format!("{}: {e}", path.display()))
 }
+
+/// Face material bit of MGS3's invisible walls (collision with nothing drawn).
+const INVISIBLE_WALL: u32 = 0x0200_0000;
 
 fn count_i32(n: usize) -> Result<i32, String> {
     i32::try_from(n).map_err(|_| format!("{n} triangles do not fit an int"))
@@ -229,7 +237,8 @@ pub unsafe extern "C" fn mgsk_install_geom(session: *mut Session, geom_path: *co
         if !(units_per_mm.is_finite() && units_per_mm > 0.) {
             return Err(format!("bad units_per_mm {units_per_mm}"));
         }
-        let mut tris = read_geom(geom_path)?;
+        let decoded = read_geom_decoded(geom_path)?;
+        let mut tris = decoded.triangles;
         for c in tris.iter_mut().flatten().flatten() {
             *c *= units_per_mm;
         }
@@ -237,7 +246,12 @@ pub unsafe extern "C" fn mgsk_install_geom(session: *mut Session, geom_path: *co
         let rails = geom_rails(&tris, units_per_mm);
         let rail_count = count_i32(rails.len())?;
         let floor = floor::Floor::new(&tris);
-        let prepared = session.collision_builder().build(tris, rails)?;
+        // MGS3's invisible walls (face material bit 0x0200_0000: thin one-sided panels on
+        // barrier ends, above fences, around the stage) stop Snake climbing; no retail Skate
+        // world has them, and the chase camera snapped onto them (docs/formats.md). The
+        // skater still collides with them; only the camera sees through.
+        let camera_hidden: Vec<bool> = decoded.materials.iter().map(|m| m & INVISIBLE_WALL != 0).collect();
+        let prepared = session.collision_builder().build_with_camera_mask(tris, rails, &camera_hidden)?;
         session.install_collision(prepared)?;
         rail_counts().insert(std::ptr::from_mut(session) as usize, rail_count);
         floors().insert(std::ptr::from_mut(session) as usize, floor);

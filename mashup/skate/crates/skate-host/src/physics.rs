@@ -95,6 +95,9 @@ pub(crate) struct GamePhysics {
     pub board: BoardRuntime,
     pub riding: RidingOutputs,
     world: BoardWorld,
+    /// The world the chase camera collides with, when it differs from `world` (host
+    /// collision with faces the camera should see through, e.g. MGS3's invisible walls).
+    camera_world: Option<BoardWorld>,
     grind_world: std::sync::Arc<crate::grind_world::StaticProvider>,
     grind_materials: grind_materials::GrindMaterials,
     offboard_grab_scene: offboard::grab_scene::Registry,
@@ -233,6 +236,10 @@ impl GamePhysics {
         &self.world
     }
 
+    pub(crate) fn camera_world(&self) -> &BoardWorld {
+        self.camera_world.as_ref().unwrap_or(&self.world)
+    }
+
     /// Flat-world convenience used by private-asset integration tests.
     #[cfg(test)]
     pub fn load(asset_root: &std::path::Path) -> Result<Self, String> {
@@ -327,6 +334,7 @@ impl GamePhysics {
             board,
             riding,
             world,
+            camera_world: None,
             grind_world,
             grind_materials,
             offboard_grab_scene,
@@ -355,9 +363,11 @@ impl GamePhysics {
         &mut self,
         world: BoardWorld,
         grind_world: std::sync::Arc<crate::grind_world::StaticProvider>,
+        camera_world: Option<BoardWorld>,
     ) -> Result<(), String> {
         self.offboard_grab_scene = offboard::grab_scene::Registry::new(&world, Vec::new(), Vec::new())?;
         self.world = world;
+        self.camera_world = camera_world;
         self.grind_world = grind_world;
         Ok(())
     }

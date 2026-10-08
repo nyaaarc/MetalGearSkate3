@@ -71,7 +71,7 @@ impl Session {
     /// rides, climbs and grinds from the next tick.
     pub fn install_collision(&mut self, prepared: PreparedCollision) -> Result<(), String> {
         self.physics
-            .install_world(prepared.world, std::sync::Arc::clone(&prepared.grind))?;
+            .install_world(prepared.world, std::sync::Arc::clone(&prepared.grind), prepared.camera_world)?;
         self.skater.trajectory.bind_grind_world(prepared.grind);
         Ok(())
     }
@@ -206,6 +206,7 @@ impl Session {
 pub struct PreparedCollision {
     world: skate_core::physics::board_world::BoardWorld,
     grind: std::sync::Arc<crate::grind_world::StaticProvider>,
+    camera_world: Option<skate_core::physics::board_world::BoardWorld>,
 }
 
 #[derive(Clone, Copy)]
@@ -223,7 +224,37 @@ impl CollisionBuilder {
         Ok(PreparedCollision {
             world: crate::skate_world::collision_world(&map, self.material)?,
             grind: std::sync::Arc::new(crate::grind_world::StaticProvider::new(Some(&map))?),
+            camera_world: None,
         })
+    }
+
+    /// As `build`, plus a world for the chase camera without the triangles marked in
+    /// `camera_hidden` (same order as `triangles`): host collision the camera should see
+    /// through, such as MGS3's invisible walls, which no retail Skate world has.
+    pub fn build_with_camera_mask(
+        &self,
+        triangles: Vec<[[f32; 3]; 3]>,
+        rails: Vec<Vec<[f32; 3]>>,
+        camera_hidden: &[bool],
+    ) -> Result<PreparedCollision, String> {
+        if camera_hidden.len() != triangles.len() {
+            return Err("camera mask length differs from the triangle count".into());
+        }
+        let camera_world = if camera_hidden.iter().any(|&hidden| hidden) {
+            let seen: Vec<[[f32; 3]; 3]> = triangles
+                .iter()
+                .zip(camera_hidden)
+                .filter(|&(_, &hidden)| !hidden)
+                .map(|(t, _)| *t)
+                .collect();
+            let map = collision_map(seen, Vec::new(), [0.; 3], 0.);
+            Some(crate::skate_world::collision_world(&map, self.material)?)
+        } else {
+            None
+        };
+        let mut prepared = self.build(triangles, rails)?;
+        prepared.camera_world = camera_world;
+        Ok(prepared)
     }
 }
 

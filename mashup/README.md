@@ -34,3 +34,9 @@ Local changes (record each, with the reason):
     builder and `observe` without Bevy or logs (`AudioObserver`, `Riding`); `board_in_water` is
     always false (MGS3 collision has no water surfaces). `bridge.rs`: `Session::audio_observe`.
   - `skate-host/Cargo.toml` depends on `skate-audio`; the workspace lists the two audio crates.
+- `skate-host/src/physics.rs`, `physics/bridge.rs`, `physics/camera_output.rs`: an optional
+  camera-only collision world (`GamePhysics::camera_world`, `CollisionBuilder::
+  build_with_camera_mask`, `install_world(.., camera_world)`). The chase camera queries it
+  instead of the physics world. MGS3 collision has invisible walls (thin panels on barrier ends
+  and above fences, face material bit 0x0200_0000) that no retail Skate world has; the retail
+  camera's line from skater to eye snapped onto them. The physics world is unchanged.
