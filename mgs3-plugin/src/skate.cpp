@@ -436,8 +436,9 @@ DWORD WINAPI run(LPVOID) {
     set_status(st);
     if (++ticks % 120 == 0) {
       const pose::Stats ps = pose::stats();
-      log("skate: pose hook calls %llu, applied %llu, last bone count %d, nearest 57-bone object %.0f mm, relative %d",
-          ps.calls, ps.applied, ps.last_count, ps.nearest_mm, ps.relative);
+      log("skate: pose hook calls %llu, palette slots posed %llu in %llu Snake draws, last bone count %d, nearest "
+          "57-bone object %.0f mm, relative %d",
+          ps.calls, ps.applied, ps.draws, ps.last_count, ps.nearest_mm, ps.relative);
       log("skate: skater at %.2f %.2f %.2f (m) heading %.0f deg; pad buttons %04X left %d,%d right %d,%d", m[12], m[13], m[14],
           heading * 180.f / std::numbers::pi_v<float>, pad.buttons, pad.left[0], pad.left[1], pad.right[0], pad.right[1]);
     }

@@ -20,7 +20,7 @@ const UP: Vec3 = Vec3::Y;
 /// A face this upward is walkable; its edges are rail candidates.
 const UPWARD: f32 = 0.65;
 /// Horizontal grid cell for probing.
-const CELL: f32 = 2.0;
+const CELL: f32 = 0.5;
 /// How high above the lip the drop probe starts.
 const PROBE_LIFT: f32 = 0.03;
 /// How far past the lip the probes look.
@@ -31,6 +31,10 @@ const MIN_DROP: f32 = 0.08;
 const WALL_PROBE_UP: f32 = 0.08;
 /// How far behind the lip the wall probe starts.
 const WALL_PROBE_BACK: f32 = 0.03;
+/// A lip has a side under it: a probe this far below it, reaching this far back under it from
+/// outside, must hit something. Zero-thickness planes (MGS3 tree branches and foliage) fail.
+const SIDE_PROBE_DOWN: f32 = 0.03;
+const SIDE_PROBE_BACK: f32 = 0.25;
 /// Edges shorter than this are ignored.
 const MIN_EDGE: f32 = 0.03;
 /// Edges shorter than this are probed once, at their middle.
@@ -52,6 +56,8 @@ const THIN_HEIGHT: f32 = 0.03;
 /// The skate engine counts rails in a u16.
 const MAX_RAILS: usize = u16::MAX as usize;
 
+/// What each stage of `find` kept. The C API passes on only the rails; the tests print this.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Default, Debug, Clone, Copy)]
 pub struct Census {
     /// Edges of walkable faces.
@@ -121,7 +127,7 @@ pub fn find(tris: &[[[f32; 3]; 3]]) -> (Vec<Vec<[f32; 3]>>, Census) {
         rails.truncate(MAX_RAILS);
     }
     census.rails = rails.len();
-    (rails.into_iter().map(|r| r.into_iter().map(Vec3::to_array).collect()).collect(), census)
+    (rails.into_iter().map(|r| r.into_iter().map(|p| p.to_array()).collect()).collect(), census)
 }
 
 fn polyline_len(points: &[Vec3]) -> f32 {
@@ -162,14 +168,19 @@ struct Probe<'a> {
 }
 
 impl Probe<'_> {
-    /// Past `p` along `out` the ground falls away and nothing rises.
+    /// Past `p` along `out` the ground falls away and nothing rises, and something solid
+    /// holds the lip up.
     fn is_lip(&mut self, p: Vec3, out: Vec3) -> bool {
         let down_from = p + out * PROBE_OUT + UP * PROBE_LIFT;
         if self.hit(down_from, -UP, PROBE_LIFT + MIN_DROP) {
             return false;
         }
         let across_from = p - out * WALL_PROBE_BACK + UP * WALL_PROBE_UP;
-        !self.hit(across_from, out, WALL_PROBE_BACK + PROBE_OUT)
+        if self.hit(across_from, out, WALL_PROBE_BACK + PROBE_OUT) {
+            return false;
+        }
+        let under_from = p + out * PROBE_OUT - UP * SIDE_PROBE_DOWN;
+        self.hit(under_from, -out, PROBE_OUT + SIDE_PROBE_BACK)
     }
 
     /// Whether the segment from `origin` along unit `dir` for `len` crosses any triangle,
@@ -428,5 +439,23 @@ mod tests {
         assert_eq!(rails.len(), 4, "{rails:?}");
         let total: f32 = rails.iter().map(|r| polyline_len(&r.iter().copied().map(Vec3::from_array).collect::<Vec<_>>())).sum();
         assert!((total - 10.).abs() < 0.01, "total {total}, {rails:?}");
+    }
+
+    /// Census and timing on real stages, when the game is installed. `cargo test -- --nocapture`.
+    #[test]
+    fn mgs3_stages() {
+        let dir = std::path::Path::new("C:/Program Files (x86)/Steam/steamapps/common/MGS3/assets/geom/us");
+        for name in ["s091a", "c001b"] {
+            let Ok(data) = std::fs::read(dir.join(format!("{name}.geom"))) else { continue };
+            let tris: Vec<_> = crate::geom::decode(&data).unwrap().triangles.iter()
+                .map(|t| t.map(|p| p.map(|c| c / 1000.))).collect();
+            let started = std::time::Instant::now();
+            let (rails, census) = find(&tris);
+            let lens: Vec<f32> = rails.iter().map(|r| polyline_len(&r.iter().copied().map(Vec3::from_array).collect::<Vec<_>>())).collect();
+            let total: f32 = lens.iter().sum();
+            let longest = lens.iter().copied().fold(0., f32::max);
+            println!("{name}: {} tris, {census:?}, total {total:.1} m, longest {longest:.1} m, {:?}",
+                tris.len(), started.elapsed());
+        }
     }
 }

@@ -2472,6 +2472,7 @@ dependencies = [
 name = "skate-ffi"
 version = "0.1.0"
 dependencies = [
+ "glam",
  "serde_json",
  "skate-core",
  "skate-host",

@@ -21,6 +21,7 @@
 
 #include "game.hpp"
 #include "log.hpp"
+#include "pose.hpp"
 #include "skate.hpp"
 #include "skate_ffi.h"
 
@@ -664,23 +665,36 @@ bool main_camera_pers(const Mat& p) {
          l0 > 0.1f && l1 > 0.1f && std::fabs(dot(r0, r3)) < 1e-3f * l0 && std::fabs(dot(r1, r3)) < 1e-3f * l1;
 }
 
-// Rewrites gVS_Pers in a $Globals image to draw from g_ovr_vp. Caller holds g_cap_mutex.
-void rewrite(uint8_t* globals) {
+// A main-camera $Globals image: its gVS_Pers and the offset d (gVS_Pers = S * T(d)).
+bool main_camera_draw(const uint8_t* globals, Mat& pers, Vec& d) {
   float f[16];
   memcpy(f, globals + kPersOffset, sizeof(f));
-  const Mat pers = from_rows(f);
-  if (!main_camera_pers(pers)) return;
+  pers = from_rows(f);
+  if (!main_camera_pers(pers)) return false;
   const Vec rows[3] = {row_of(pers, 0), row_of(pers, 1), row_of(pers, 3)};
+  return solve3(rows, {pers.at(0, 3), pers.at(1, 3), pers.at(3, 3)}, d);
+}
+
+// Notes the frame's look-at point L from its first stage draw. Caller holds g_cap_mutex.
+void note_look_at(const uint8_t* globals) {
+  Mat pers;
   Vec d;
-  if (!solve3(rows, {pers.at(0, 3), pers.at(1, 3), pers.at(3, 3)}, d)) return;
-  if (!g_L_known && dot(d, d) < 1.f) {
-    memcpy(f, globals + kMat0Offset, sizeof(f));
-    const Mat mat0 = from_rows(f);
-    if (stage_translation(mat0)) {
-      g_L_frame = {-mat0.at(0, 3), -mat0.at(1, 3), -mat0.at(2, 3)};
-      g_L_known = true;
-    }
+  if (g_L_known || !main_camera_draw(globals, pers, d) || dot(d, d) >= 1.f) return;
+  float f[16];
+  memcpy(f, globals + kMat0Offset, sizeof(f));
+  const Mat mat0 = from_rows(f);
+  if (stage_translation(mat0)) {
+    g_L_frame = {-mat0.at(0, 3), -mat0.at(1, 3), -mat0.at(2, 3)};
+    g_L_known = true;
   }
+}
+
+// Rewrites gVS_Pers in a $Globals image to draw from g_ovr_vp. Caller holds g_cap_mutex.
+void rewrite(uint8_t* globals) {
+  Mat pers;
+  Vec d;
+  if (!main_camera_draw(globals, pers, d)) return;
+  float f[16];
   Vec L;
   if (g_L_known) {
     L = g_L_frame;
@@ -725,6 +739,196 @@ Mat skate_view_projection(const float cam[13], float aspect, float fov_override_
   return m;
 }
 
+// ---- palette dump (`render palette now`): one frame's skinned main-camera draws -------------
+//
+// For working out how Snake's bone palette (gVS_Mat[64], row_major float3x4 at byte 624) relates
+// to his bone matrices. Writes MetalGearSkate.palette.txt beside the plugin.
+constexpr UINT kPaletteOffset = 624, kPaletteSlots = 64;
+int g_dump_state = 0;  // guarded by g_cap_mutex: 0 idle, 1 requested, 2 recording this frame
+std::vector<std::vector<float>> g_dump;  // per draw: L(3) d(3) pers(16) mat0(16) palette(64*12)
+std::filesystem::path g_dump_path;
+// Snake's bones as the game left them, taken at the frame's first skinned draw (same frame).
+float g_dump_bones[pose::kSnakeBones * 16], g_dump_origin[3], g_dump_object[16];
+bool g_dump_relative = false, g_dump_have_bones = false;
+
+void dump_draw(const uint8_t* globals) {
+  Mat pers;
+  Vec d;
+  if (!main_camera_draw(globals, pers, d) || dot(d, d) < 1.f || g_dump.size() >= 1024) return;
+  if (g_dump.empty()) {
+    g_dump_have_bones = pose::game_bones(g_dump_bones, g_dump_origin, g_dump_object, g_dump_relative);
+  }
+  std::vector<float> e(3 + 3 + 16 + 16 + kPaletteSlots * 12);
+  e[0] = g_L_frame.x, e[1] = g_L_frame.y, e[2] = g_L_frame.z;
+  if (!g_L_known) e[0] = e[1] = e[2] = NAN;
+  e[3] = d.x, e[4] = d.y, e[5] = d.z;
+  memcpy(&e[6], globals + kPersOffset, 64);
+  memcpy(&e[22], globals + kMat0Offset, 64);
+  memcpy(&e[38], globals + kPaletteOffset, kPaletteSlots * 48);
+  g_dump.push_back(std::move(e));
+}
+
+// At the end of a recorded frame. Caller holds g_cap_mutex.
+void write_dump() {
+  FILE* file = nullptr;
+  if (_wfopen_s(&file, g_dump_path.c_str(), L"w") != 0 || !file) return;
+  const game::Vec3* snake = game::snake_position();
+  if (snake) fprintf(file, "snake %.3f %.3f %.3f\n", snake->x, snake->y, snake->z);
+  const float* bones = g_dump_bones;
+  const float* origin = g_dump_origin;
+  const bool relative = g_dump_relative;
+  if (g_dump_have_bones) {
+    fprintf(file, "origin %.3f %.3f %.3f relative %d\nobject", origin[0], origin[1], origin[2], relative ? 1 : 0);
+    for (const float v : g_dump_object) fprintf(file, " %.6g", v);
+    fprintf(file, "\n");
+    for (int b = 0; b < pose::kSnakeBones; ++b) {
+      fprintf(file, "bone %d", b);
+      for (int i = 0; i < 16; ++i) fprintf(file, " %.6g", bones[b * 16 + i]);
+      fprintf(file, "\n");
+    }
+  }
+  for (const auto& e : g_dump) {
+    fprintf(file, "draw");
+    for (const float v : e) fprintf(file, " %.6g", v);
+    fprintf(file, "\n");
+  }
+  fclose(file);
+  log("render: palette dump: %zu skinned draws -> %ls", g_dump.size(), g_dump_path.c_str());
+  g_dump.clear();
+}
+
+// ---- posing Snake through his bone palette ---------------------------------------------------
+//
+// Skinned vertex shaders take a bone palette gVS_Mat[64] (row_major float3x4 at byte 624; each
+// draw (mesh) indexes a few slots through BLENDINDICES) and transform by gVS_Pers after it. For
+// Snake every used slot is, exactly (checked to 0.0 mm on a palette dump):
+//   slot = [ R^T | T - O - R^T * rest ]
+// with R, T one of his bones as the game computed it (game layout: rows = axes, translation row),
+// rest that bone's rest position in sna_def.mdl (no rest rotations) and O = L + d, the render
+// object's translation (obj+0x20 row 3). So the slot is bone x inverse bind, relative to O.
+// Which bone a slot holds is found by matching it against the game's own bones for the frame
+// (pose::game_bones), cached per frame by content; the slot is then rebuilt from the published
+// pose (pose::current). Draws of other objects (his gear) don't sit on O and are left alone.
+
+constexpr int kSnakeBones = pose::kSnakeBones;
+float g_rest[kSnakeBones][3];
+bool g_rest_loaded = false;
+
+// sna_def.mdl bone table (tools/mdl_bones.py): count at 0x04, bones at [0x18], 0x50 bytes each,
+// rest position (model space, mm) at +0x20.
+void load_rest(const std::filesystem::path& mdl) {
+  FILE* file = nullptr;
+  if (_wfopen_s(&file, mdl.c_str(), L"rb") != 0 || !file) {
+    log("render: %ls not readable; Snake can't be posed", mdl.c_str());
+    return;
+  }
+  std::vector<uint8_t> data;
+  uint8_t chunk[65536];
+  for (size_t n; (n = fread(chunk, 1, sizeof(chunk), file)) > 0;) data.insert(data.end(), chunk, chunk + n);
+  fclose(file);
+  uint32_t count = 0;
+  uint64_t offset = 0;
+  if (data.size() >= 0x50) {
+    memcpy(&count, data.data() + 4, 4);
+    memcpy(&offset, data.data() + 0x18, 8);
+  }
+  if (count != kSnakeBones || offset + count * 0x50ull > data.size()) {
+    log("render: %ls: unexpected bone table (%u bones); Snake can't be posed", mdl.c_str(), count);
+    return;
+  }
+  for (int b = 0; b < kSnakeBones; ++b) memcpy(g_rest[b], data.data() + offset + b * 0x50 + 0x20, 12);
+  g_rest_loaded = true;
+  log("render: Snake rest skeleton from %ls (%u bones)", mdl.c_str(), count);
+}
+
+// Per frame (guarded by g_cap_mutex): the game's and our bones, and the slot -> bone cache.
+struct SkinFrame {
+  int state = 0;  // 0 not fetched, 1 ready, -1 nothing to do this frame
+  float game[kSnakeBones * 16];
+  float ours[kSnakeBones * 16];
+  Vec origin;  // the render object's translation, O
+  std::vector<std::pair<uint64_t, int>> slots;  // slot content hash -> bone (-1 = not Snake's)
+  uint64_t posed = 0, draws = 0;
+};
+SkinFrame g_skin;
+
+uint64_t hash_slot(const float* f) {
+  uint64_t h = 1469598103934665603ull;
+  const auto* b = reinterpret_cast<const uint8_t*>(f);
+  for (int i = 0; i < 48; ++i) h = (h ^ b[i]) * 1099511628211ull;
+  return h;
+}
+
+// The bone whose inverse-bind matrix relative to O is `slot` (3 rows of 4), or -1.
+int match_bone(const float* slot, const float* bones, Vec origin) {
+  for (int b = 0; b < kSnakeBones; ++b) {
+    const float* m = bones + b * 16;  // rows: X, Y, Z axis, translation
+    bool ok = true;
+    for (int r = 0; r < 3 && ok; ++r) {
+      for (int c = 0; c < 3 && ok; ++c) ok = std::fabs(slot[r * 4 + c] - m[c * 4 + r]) < 1e-3f;
+    }
+    if (!ok) continue;
+    const float o[3] = {origin.x, origin.y, origin.z};
+    for (int r = 0; r < 3 && ok; ++r) {
+      const float t = m[12 + r] - o[r] - (m[0 * 4 + r] * g_rest[b][0] + m[1 * 4 + r] * g_rest[b][1] + m[2 * 4 + r] * g_rest[b][2]);
+      ok = std::fabs(slot[r * 4 + 3] - t) < 1.f;
+    }
+    if (ok) return b;
+  }
+  return -1;
+}
+
+// Rewrites Snake's palette in a $Globals image with the published pose. Caller holds g_cap_mutex.
+void pose_snake(uint8_t* globals) {
+  if (!g_rest_loaded || g_skin.state < 0 || !g_L_known) return;
+  Mat pers;
+  Vec d;
+  if (!main_camera_draw(globals, pers, d) || dot(d, d) < 1.f) return;  // skinned draws only
+  if (g_skin.state == 0) {
+    float origin[3], object[16];
+    bool relative = false;
+    g_skin.state = pose::current(g_skin.ours) && pose::game_bones(g_skin.game, origin, object, relative) ? 1 : -1;
+    g_skin.origin = {object[12], object[13], object[14]};
+    if (g_skin.state < 0) return;
+  }
+  const Vec O{g_L_frame.x + d.x, g_L_frame.y + d.y, g_L_frame.z + d.z};
+  const Vec off = O - g_skin.origin;
+  if (dot(off, off) > 4.f) return;  // not Snake's object
+  ++g_skin.draws;
+  auto* palette = reinterpret_cast<float*>(globals + kPaletteOffset);
+  for (UINT s = 0; s < kPaletteSlots; ++s) {
+    float* slot = palette + s * 12;
+    const uint64_t h = hash_slot(slot);
+    int bone = -2;
+    for (const auto& [key, b] : g_skin.slots) {
+      if (key == h) {
+        bone = b;
+        break;
+      }
+    }
+    if (bone == -2) {
+      bone = match_bone(slot, g_skin.game, g_skin.origin);
+      g_skin.slots.emplace_back(h, bone);
+    }
+    if (bone < 0) continue;
+    const float* m = g_skin.ours + bone * 16;
+    const float o[3] = {g_skin.origin.x, g_skin.origin.y, g_skin.origin.z};
+    for (int r = 0; r < 3; ++r) {
+      for (int c = 0; c < 3; ++c) slot[r * 4 + c] = m[c * 4 + r];
+      slot[r * 4 + 3] = m[12 + r] - o[r] -
+                        (m[0 * 4 + r] * g_rest[bone][0] + m[1 * 4 + r] * g_rest[bone][1] + m[2 * 4 + r] * g_rest[bone][2]);
+    }
+    ++g_skin.posed;
+  }
+}
+
+void end_skin_frame() {
+  if (g_skin.posed || g_skin.draws) pose::count_applied(g_skin.posed, g_skin.draws);
+  g_skin.state = 0;
+  g_skin.slots.clear();
+  g_skin.posed = g_skin.draws = 0;
+}
+
 HRESULT STDMETHODCALLTYPE on_map(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub, D3D11_MAP type, UINT flags,
                                  D3D11_MAPPED_SUBRESOURCE* out) {
   const HRESULT hr = g_map_hook.stdcall<HRESULT>(c, res, sub, type, flags, out);
@@ -748,6 +952,9 @@ void STDMETHODCALLTYPE on_unmap(ID3D11DeviceContext* c, ID3D11Resource* res, UIN
     for (Pending& p : g_pending_maps) {
       if (p.res == res) {
         tally(p.data);  // the game has written the whole buffer by now
+        note_look_at(p.data);
+        if (g_dump_state == 2) dump_draw(p.data);
+        pose_snake(p.data);
         if (g_ovr_active) rewrite(p.data);
         p = {};
         break;
@@ -803,6 +1010,13 @@ void end_capture_frame() {
     g_L_history = 0;
   }
   g_L_known = false;
+  end_skin_frame();
+  if (g_dump_state == 2) {
+    write_dump();
+    g_dump_state = 0;
+  } else if (g_dump_state == 1) {
+    g_dump_state = 2;
+  }
   g_ovr_used = g_ovr_active;
   g_ovr_used_vp = g_ovr_vp;
   g_ovr_active = false;  // frame() turns it back on for the next frame
@@ -1206,6 +1420,12 @@ bool install_hooks() {
 void start(const std::filesystem::path& plugin_dir, HMODULE ffi) {
   const auto ini = plugin_dir / L"MetalGearSkate.ini";
   load_settings(ini);
+  g_dump_path = plugin_dir / L"MetalGearSkate.palette.txt";
+  {
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    load_rest(std::filesystem::path(exe).parent_path() / L"assets" / L"mdl" / L"us" / L"sna_def.mdl");
+  }
   log("render: settings %s", describe(settings()).c_str());
   char assets[MAX_PATH] = {};
   GetPrivateProfileStringA("skate", "skate_data", "", assets, MAX_PATH, ini.string().c_str());
@@ -1216,6 +1436,11 @@ void start(const std::filesystem::path& plugin_dir, HMODULE ffi) {
 }
 
 std::string set(const std::string& key, const std::string& value) {
+  if (key == "palette") {  // `render palette now`: dump the next frame's skinned draws
+    std::lock_guard lock(g_cap_mutex);
+    g_dump_state = 1;
+    return "ok dumping next frame";
+  }
   if (key == "capture") {  // `render capture now`: log the last frame's captured camera matrices
     const game::Vec3* p = game::snake_position();
     const Vec snake = p ? Vec{p->x, p->y, p->z} : Vec{};

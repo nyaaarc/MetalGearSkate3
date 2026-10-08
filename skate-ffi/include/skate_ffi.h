@@ -108,6 +108,9 @@ int mgsk_board_pose(const MgskSession* session, float* out, uint32_t max_bodies)
  * every call: load once. */
 int mgsk_board_mesh(const char* assets_dir, uint32_t body, MgskBoardVertex* vertices, uint32_t max_vertices,
                     uint16_t* indices, uint32_t max_indices, uint32_t* out_vertices, uint32_t* out_indices);
+/* Copies the skater's state name (the engine's player state; a grind state while grinding),
+ * NUL-terminated and truncated to fit capacity bytes. Returns its full length, or -1. */
+int mgsk_state(const MgskSession* session, char* out, uint32_t capacity);
 
 #ifdef __cplusplus
 }

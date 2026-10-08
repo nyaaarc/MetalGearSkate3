@@ -63,6 +63,10 @@ The stage's real collision is loaded on F5; Snake still plays his walk animation
   read from its vertex-shader constants each frame; in game it sits on the ground under Snake.
 - While skating, the whole frame is drawn from Skate 3's own chase camera (`mgsk_camera`): the
   game's camera constants are rewritten per draw, so scenery, Snake and the board all follow it.
+- Grind rails: `mgsk_install_geom` finds the stage's grindable lips (ledges, kerbs, box and
+  railing tops; `skate-ffi/src/rails.rs`) and gives them to the engine as rails. Offline,
+  `tools/rails_check.py --grind` ollies onto 0.5 m ledges in s091a and the engine grinds
+  (FiftyFifty/FiveO). Not yet tried in game.
 - Retargeting groundwork: Snake's 57-bone skeleton decoded from `sna_def.mdl` (`tools/mdl_bones.py`),
   the skater's 36 bones exported (`mgsk_bone_count`/`mgsk_bone_name`/`mgsk_bones`), and a
   Snake-to-skater bone map with axis and rest-pose notes in `docs/retarget.json`.
@@ -82,6 +86,8 @@ The stage's real collision is loaded on F5; Snake still plays his walk animation
 - Repository structure follows [GTA San AnSkateas](https://github.com/ryglizzy/GTA-San-AnSkateas) by ryglizzy.
 - Direct3D 11 hooking approach (Present, state save/restore, coexisting hooks) studied from
   [MGSHDFix](https://github.com/ShizCalev/MGSHDFix) by ShizCalev and contributors (MIT).
+- Grind rail finder (`skate-ffi/src/rails.rs`) ported from `render_anim/src/skate/rails.rs` in
+  [2010 Rust Rewrite Mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup) by chasmlol (Apache-2.0).
 - MGS3 format research: Jayveer, Joy-Division, GirianSeed and others; see `docs/formats.md`.
 
 ## License
