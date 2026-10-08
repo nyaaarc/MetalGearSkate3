@@ -218,6 +218,9 @@ fn read_geom_decoded(path: *const c_char) -> Result<geom::Decoded, String> {
 
 /// Face material bit of MGS3's invisible walls (collision with nothing drawn).
 const INVISIBLE_WALL: u32 = 0x0200_0000;
+/// Invisible walls whose top is at most this far (m) above the floor under them are left out of
+/// the skater's world (s091a: the barrier-end panels that made him bail stand 0.88-3.0 m).
+const SHORT_INVISIBLE_WALL_M: f32 = 3.0;
 
 fn count_i32(n: usize) -> Result<i32, String> {
     i32::try_from(n).map_err(|_| format!("{n} triangles do not fit an int"))
@@ -242,15 +245,43 @@ pub unsafe extern "C" fn mgsk_install_geom(session: *mut Session, geom_path: *co
         for c in tris.iter_mut().flatten().flatten() {
             *c *= units_per_mm;
         }
-        let count = count_i32(tris.len())?;
-        let rails = geom_rails(&tris, units_per_mm);
-        let rail_count = count_i32(rails.len())?;
+        let mut materials = decoded.materials;
         let floor = floor::Floor::new(&tris);
         // MGS3's invisible walls (face material bit 0x0200_0000: thin one-sided panels on
         // barrier ends, above fences, around the stage) stop Snake climbing; no retail Skate
-        // world has them, and the chase camera snapped onto them (docs/formats.md). The
-        // skater still collides with them; only the camera sees through.
-        let camera_hidden: Vec<bool> = decoded.materials.iter().map(|m| m & INVISIBLE_WALL != 0).collect();
+        // world has them (docs/formats.md). Short ones (top at most SHORT_INVISIBLE_WALL_M above
+        // the floor under them: barrier-end panels, low railings) only make the skater bail on
+        // thin air, so they're left out; taller ones (fences, stage bounds) still stop him.
+        let short_wall = SHORT_INVISIBLE_WALL_M * 1000. * units_per_mm;
+        let keep: Vec<bool> = tris
+            .iter()
+            .zip(&materials)
+            .map(|(t, m)| {
+                if m & INVISIBLE_WALL == 0 {
+                    return true;
+                }
+                let bottom = t.iter().map(|p| p[1]).fold(f32::MAX, f32::min);
+                let top = t.iter().map(|p| p[1]).fold(f32::MIN, f32::max);
+                let (cx, cz) = ((t[0][0] + t[1][0] + t[2][0]) / 3., (t[0][2] + t[1][2] + t[2][2]) / 3.);
+                let probe = 300. * units_per_mm;
+                match floor.below(cx, bottom + probe, cz) {
+                    Some(base) => top - base > short_wall,
+                    None => true,
+                }
+            })
+            .collect();
+        let mut kept = keep.iter();
+        tris.retain(|_| *kept.next().unwrap());
+        let mut kept = keep.iter();
+        materials.retain(|_| *kept.next().unwrap());
+        let count = count_i32(tris.len())?;
+        // No grind rails along invisible walls' tops (they'd be rails in thin air).
+        let visible: Vec<geom::Triangle> =
+            tris.iter().zip(&materials).filter(|(_, m)| *m & INVISIBLE_WALL == 0).map(|(t, _)| *t).collect();
+        let rails = geom_rails(&visible, units_per_mm);
+        let rail_count = count_i32(rails.len())?;
+        // The chase camera sees through every invisible wall left (it snapped onto them).
+        let camera_hidden: Vec<bool> = materials.iter().map(|m| m & INVISIBLE_WALL != 0).collect();
         let prepared = session.collision_builder().build_with_camera_mask(tris, rails, &camera_hidden)?;
         session.install_collision(prepared)?;
         rail_counts().insert(std::ptr::from_mut(session) as usize, rail_count);
