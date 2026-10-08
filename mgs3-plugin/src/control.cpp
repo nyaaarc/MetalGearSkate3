@@ -146,6 +146,13 @@ std::string run(const std::string& line) {
     skate::request(arg == "on");
     return "ok";
   }
+  if (verb == "stealth") {
+    std::string arg;
+    in >> arg;
+    if (arg != "on" && arg != "off") return "error: usage stealth on|off";
+    skate::set_stealth(arg == "on");
+    return "ok";
+  }
   if (verb == "render") {
     std::string key, value;
     in >> key >> value;

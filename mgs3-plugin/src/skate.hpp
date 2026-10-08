@@ -16,6 +16,10 @@ void start(const std::filesystem::path& plugin_dir, HMODULE ffi);
 
 // Test harness: ask the skate thread to start (true) or stop (false) skating, as F5 would.
 void request(bool on);
+
+// Stealth camouflage while skating, now and for later starts (overrides stealth_while_skating).
+void set_stealth(bool on);
+
 // Start skating at a given spot: Snake's waist position in mm (floor + 800) and MGS3 heading in
 // degrees (0 = +z, 90 = +x). The skate loop then holds Snake there, so the game can't pull him back.
 void request_at(float x_mm, float y_mm, float z_mm, float heading_deg);

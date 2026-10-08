@@ -20,3 +20,11 @@ fn host_math_handles_scalar_geometry_and_ordinary_float_boundaries() {
     assert_eq!(vector_min(-2.0, 3.0), -2.0);
     assert_eq!(vector_max(-2.0, 3.0), 3.0);
 }
+
+#[test]
+fn subnormal_dot_products_flush_to_zero_like_vmx() {
+    let residue = [1.0e-20, 0.0, -1.0e-20, 0.0];
+    assert_eq!(dot3(residue, residue), 0.0);
+    assert_eq!(dot4(residue, residue), 0.0);
+    assert_eq!(dot3([1.0, 1.0e-20, 0.0, 0.0], [1.0, 1.0e-20, 0.0, 0.0]), 1.0);
+}

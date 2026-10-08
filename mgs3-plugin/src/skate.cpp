@@ -13,6 +13,7 @@
 #include <cstring>
 #include <numbers>
 #include <string>
+#include <thread>
 
 #include "skate_ffi.h"
 #include "game.hpp"
@@ -34,6 +35,7 @@ constexpr int kToggleKey = VK_F5;
 
 struct Ffi {
   decltype(&mgsk_session_new) session_new;
+  decltype(&mgsk_session_free) session_free;
   decltype(&mgsk_install_world) install_world;
   decltype(&mgsk_period) period;
   decltype(&mgsk_activate) activate;
@@ -84,6 +86,8 @@ class Stealth {
 
 // -1 none, 0 stop, 1 start: a pending request from the test harness.
 std::atomic<int> g_request{-1};
+// -1 none, 0 off, 1 on: a pending stealth change from the test harness.
+std::atomic<int> g_stealth{-1};
 // Optional start pose for the next harness "skate on": mm (Snake's waist) and MGS3 heading in
 // degrees. Guarded by g_status_mutex; consumed by the skate thread.
 struct StartAt {
@@ -124,7 +128,7 @@ bool bind(T& slot, const char* name) {
 }
 
 bool load_ffi(Ffi& f) {
-  return bind(f.session_new, "mgsk_session_new") && bind(f.install_world, "mgsk_install_world") &&
+  return bind(f.session_new, "mgsk_session_new") && bind(f.session_free, "mgsk_session_free") && bind(f.install_world, "mgsk_install_world") &&
          bind(f.period, "mgsk_period") && bind(f.activate, "mgsk_activate") && bind(f.tick, "mgsk_tick") &&
          bind(f.root, "mgsk_root") && bind(f.last_error, "mgsk_last_error") &&
          bind(f.retarget_init, "mgsk_retarget_init") && bind(f.snake_pose, "mgsk_snake_pose") &&
@@ -274,6 +278,25 @@ class Clock {
   LARGE_INTEGER next_{};
 };
 
+// A session built ahead on another thread. The engine can leave non-finite state in a session
+// (docs/devlog.md, run 8), and a fresh one takes seconds to load, so one is kept ready to swap in.
+class Spare {
+ public:
+  template <class Make>
+  void prepare(Make make) {
+    if (building_.exchange(true)) return;
+    std::thread([this, make] {
+      ready_ = make();
+      building_ = false;
+    }).detach();
+  }
+  MgskSession* take() { return ready_.exchange(nullptr); }
+
+ private:
+  std::atomic<MgskSession*> ready_{nullptr};
+  std::atomic<bool> building_{false};
+};
+
 DWORD WINAPI run(LPVOID) {
   Ffi f{};
   if (!load_ffi(f)) return 0;
@@ -287,14 +310,33 @@ DWORD WINAPI run(LPVOID) {
   }
 
   // Load once up front; creating a session takes seconds.
-  const auto initial = flat_floor(0, 0, 0);
-  const float origin[3] = {0, 0, 0};
+  wchar_t exe[MAX_PATH];
+  GetModuleFileNameW(nullptr, exe, MAX_PATH);
+  // Retargeting onto Snake's own skeleton (his model file in the game's assets).
+  const auto mdl = std::filesystem::path(exe).parent_path() / "assets" / "mdl" / "us" / "sna_def.mdl";
+  const int mirror = std::stoi(ini_string("mirror_x", "0"));
+  // A session on a flat floor, set up for posing Snake (`posing` says whether that worked).
+  auto make_session = [f, data, mdl, mirror](bool* posing) -> MgskSession* {
+    const auto initial = flat_floor(0, 0, 0);
+    const float origin[3] = {0, 0, 0};
+    MgskSession* s = f.session_new(data.c_str(), initial.data(), 2, origin, 0.f);
+    if (!s) {
+      log("skate: session failed: %s", f.last_error());
+      return nullptr;
+    }
+    const bool ok = f.retarget_init(s, mdl.string().c_str(), mirror) == 0;
+    if (!ok) log("skate: retargeting unavailable for %s (mirror_x %d): %s", mdl.string().c_str(), mirror, f.last_error());
+    if (posing) *posing = ok;
+    return s;
+  };
   const DWORD started = GetTickCount();
-  MgskSession* session = f.session_new(data.c_str(), initial.data(), 2, origin, 0.f);
-  if (!session) {
-    log("skate: session failed: %s", f.last_error());
-    return 0;
-  }
+  bool posing = false;
+  MgskSession* session = make_session(&posing);
+  if (!session) return 0;
+  if (posing) log("skate: retargeting onto %s (mirror_x %d)", mdl.string().c_str(), mirror);
+  Spare spare;
+  auto prepare_spare = [&spare, make_session] { spare.prepare([make_session] { return make_session(nullptr); }); };
+  prepare_spare();
   const auto install_geom = reinterpret_cast<InstallGeomFn>(GetProcAddress(g_ffi_module, "mgsk_install_geom"));
   // `collision`: folder of pre-exported <geom>.bin files, used when the DLL can't read .geom.
   const std::filesystem::path collision_dir = ini_string("collision", "");
@@ -305,19 +347,8 @@ DWORD WINAPI run(LPVOID) {
   if (!pose_fn) log("skate: skate_ffi.dll has no mgsk_board_pose; the board won't be drawn");
   const auto camera_fn = reinterpret_cast<decltype(&mgsk_camera)>(GetProcAddress(g_ffi_module, "mgsk_camera"));
   if (!camera_fn) log("skate: skate_ffi.dll has no mgsk_camera; the game camera stays");
-  // Retargeting onto Snake's own skeleton (his model file in the game's assets).
-  bool posing = false;
-  {
-    wchar_t exe[MAX_PATH];
-    GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    const auto mdl = std::filesystem::path(exe).parent_path() / "assets" / "mdl" / "us" / "sna_def.mdl";
-    const int mirror = std::stoi(ini_string("mirror_x", "0"));
-    posing = f.retarget_init(session, mdl.string().c_str(), mirror) == 0;
-    log(posing ? "skate: retargeting onto %s (mirror_x %d)" : "skate: retargeting unavailable for %s (mirror_x %d): %s",
-        mdl.string().c_str(), mirror, posing ? "" : f.last_error());
-  }
   float snake_bones[pose::kSnakeBones * 16];
-  const bool stealth_enabled = ini_string("stealth_while_skating", "1") != "0";
+  bool stealth_enabled = ini_string("stealth_while_skating", "1") != "0";
   Stealth stealth;
   const float period = f.period(session);
   log("skate: engine ready in %lu ms (tick %.4f s). F5 toggles skating.", GetTickCount() - started, period);
@@ -328,10 +359,68 @@ DWORD WINAPI run(LPVOID) {
   st.ready = true;
   set_status(st);
   int ticks = 0;
+  // Installs the current stage's collision (once per stage, else a flat floor at `at`) and puts
+  // the skater down at `at` (engine units) facing `heading`. False with the error logged.
+  auto begin = [&](const float at[3], float heading) -> bool {
+    const std::string stage = game::current_stage() ? game::current_stage() : "";
+    bool world_ok = !stage.empty() && stage == collision_stage;
+    if (!world_ok && !stage.empty()) {
+      if (const auto geom = stage_geom(stage)) {
+        const DWORD t0 = GetTickCount();
+        int count = -1;
+        if (install_geom) {
+          count = install_geom(session, geom->string().c_str(), 1.f / kMmPerUnit);
+        } else if (const auto tris = load_collision_bin(collision_dir / geom->filename().replace_extension(".bin"));
+                   !tris.empty() && f.install_world(session, tris.data(), static_cast<uint32_t>(tris.size() / 9)) == 0) {
+          count = static_cast<int>(tris.size() / 9);
+        }
+        if (count >= 0) {
+          world_ok = true;
+          collision_stage = stage;
+          st.collision_triangles = count;
+          st.rails = f.rail_count(session);
+          log("skate: %s collision from %s: %d triangles in %lu ms", stage.c_str(),
+              geom->filename().string().c_str(), count, GetTickCount() - t0);
+        } else {
+          log("skate: %s collision failed: %s", stage.c_str(), f.last_error());
+        }
+      } else {
+        log("skate: no .geom listed for stage '%s'", stage.c_str());
+      }
+    }
+    if (!world_ok) {
+      const auto floor = flat_floor(at[0], at[1], at[2]);
+      world_ok = f.install_world(session, floor.data(), 2) == 0;
+      collision_stage.clear();
+      st.collision_triangles = -1;
+    }
+    if (!world_ok || f.activate(session, at, heading)) {
+      log("skate: start failed: %s", f.last_error());
+      return false;
+    }
+    return true;
+  };
+  // Swaps the spare in for a session the engine broke. False while no spare is ready yet.
+  auto replace_session = [&]() -> bool {
+    MgskSession* fresh = spare.take();
+    if (!fresh) return false;
+    f.session_free(session);
+    session = fresh;
+    collision_stage.clear();  // a new session has only the flat floor
+    prepare_spare();
+    log("skate: swapped in a fresh engine session");
+    return true;
+  };
+  bool broken = false;  // the session failed: replace it before the next start
   Clock clock(period);
   for (;;) {
     clock.wait();
     const bool key_down = (GetAsyncKeyState(kToggleKey) & 0x8000) != 0;
+    if (const int want = g_stealth.exchange(-1); want >= 0) {
+      stealth_enabled = want == 1;
+      if (skating && stealth_enabled) stealth.begin(true);
+      if (!stealth_enabled) stealth.end();
+    }
     const int remote = g_request.exchange(-1);
     const bool toggled = (key_down && !key_was_down) || (remote == 1 && !skating) || (remote == 0 && skating);
     key_was_down = key_down;
@@ -365,41 +454,12 @@ DWORD WINAPI run(LPVOID) {
         const float at[3] = {x, y, z};
         const int16_t* yaw = game::snake_yaw();
         const float heading = yaw ? headings.to_engine(*yaw) : 0.f;
-        // Real stage collision when available (loaded once per stage), else a flat floor at his feet.
-        const std::string stage = game::current_stage() ? game::current_stage() : "";
-        bool world_ok = !stage.empty() && stage == collision_stage;
-        if (!world_ok && !stage.empty()) {
-          if (const auto geom = stage_geom(stage)) {
-            const DWORD t0 = GetTickCount();
-            int count = -1;
-            if (install_geom) {
-              count = install_geom(session, geom->string().c_str(), 1.f / kMmPerUnit);
-            } else if (const auto tris = load_collision_bin(collision_dir / geom->filename().replace_extension(".bin"));
-                       !tris.empty() && f.install_world(session, tris.data(), static_cast<uint32_t>(tris.size() / 9)) == 0) {
-              count = static_cast<int>(tris.size() / 9);
-            }
-            if (count >= 0) {
-              world_ok = true;
-              collision_stage = stage;
-              st.collision_triangles = count;
-              st.rails = f.rail_count(session);
-              log("skate: %s collision from %s: %d triangles in %lu ms", stage.c_str(),
-                  geom->filename().string().c_str(), count, GetTickCount() - t0);
-            } else {
-              log("skate: %s collision failed: %s", stage.c_str(), f.last_error());
-            }
-          } else {
-            log("skate: no .geom listed for stage '%s'", stage.c_str());
-          }
-        }
-        if (!world_ok) {
-          const auto floor = flat_floor(x, y, z);
-          world_ok = f.install_world(session, floor.data(), 2) == 0;
-          collision_stage.clear();
-          st.collision_triangles = -1;
-        }
-        if (!world_ok || f.activate(session, at, heading)) {
-          log("skate: start failed: %s", f.last_error());
+        if (broken && replace_session()) broken = false;
+        if (broken) {
+          log("skate: engine session still loading after an error; try again in a few seconds");
+        } else if (!begin(at, heading)) {
+          broken = true;  // a failed start can leave the session unusable too
+          if (replace_session()) broken = false;
         } else {
           skating = true;
           game::block_input(true);
@@ -428,7 +488,16 @@ DWORD WINAPI run(LPVOID) {
     const MgskControls pad = read_pad();
     float m[16];
     if (f.tick(session, &pad) || f.root(session, m)) {
-      log("skate: engine error, off: %s", f.last_error());
+      log("skate: engine error: %s", f.last_error());
+      // Carry on from the last good spot on a fresh session, like a bail respawn.
+      const float at[3] = {st.skater[0], st.skater[1], st.skater[2]};
+      const float heading = st.heading_deg * std::numbers::pi_v<float> / 180.f;
+      if (replace_session() && begin(at, heading)) {
+        log("skate: resumed at %.2f %.2f %.2f (m)", at[0], at[1], at[2]);
+        continue;
+      }
+      broken = true;
+      log("skate: off until a fresh engine session is ready");
       skating = false;
       game::block_input(false);
       pose::publish(nullptr);
@@ -477,6 +546,8 @@ DWORD WINAPI run(LPVOID) {
 }  // namespace
 
 void request(bool on) { g_request = on ? 1 : 0; }
+
+void set_stealth(bool on) { g_stealth = on ? 1 : 0; }
 
 void request_at(float x_mm, float y_mm, float z_mm, float heading_deg) {
   {
