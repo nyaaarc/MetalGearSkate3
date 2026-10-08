@@ -73,6 +73,9 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 3. To test: `python -I tools/gametest.py install` (or `setup.cmd`), then start the game.
    `MetalGearSkate.log` appears beside the plugin. After a plugin change, `build.cmd` and
    `python -I tools/gametest.py reload` swap the new core in without restarting the game.
+   `python -I tools/regress.py` then runs the regression suite in the game: pushes, tricks,
+   grinds, bails, riding metrics, audio, the stage's edge, skate on/off and hot reloads, each
+   with numeric pass criteria (`docs/TESTING.md`, "Regression gate").
 
 ## What works
 
