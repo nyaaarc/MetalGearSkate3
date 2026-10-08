@@ -10,7 +10,7 @@
 
 namespace core {
 
-constexpr uint32_t kSharedVersion = 3;
+constexpr uint32_t kSharedVersion = 4;
 
 // Snake's actor while frozen for skating (game::freeze_snake): the slot points at the loader's
 // stub, so a core can be unloaded with him frozen and the next core can thaw him.
@@ -45,7 +45,9 @@ struct CoreShared {
 
 // Exported by the core.
 using StartFn = bool(__cdecl*)(const wchar_t* plugin_dir, HMODULE ffi, CoreShared* shared);
-using StopFn = void(__cdecl*)();
+// Stop returns whether the module can be freed: false if a thread stayed inside one of its hooks
+// or another module hooked over one of ours (then the loader leaves it loaded, inert).
+using StopFn = bool(__cdecl*)();
 constexpr const char* kStartExport = "mgsk_core_start";
 constexpr const char* kStopExport = "mgsk_core_stop";
 

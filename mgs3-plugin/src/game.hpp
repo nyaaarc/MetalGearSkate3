@@ -31,6 +31,8 @@ struct Pad {
 bool init(core::CoreShared* shared);
 
 // Removes the hooks (core unload). Snake stays frozen if he was (the loader owns that state).
+// Put the original bytes back under every hook (trampolines kept; see hooks.hpp).
+void disable_hooks();
 void stop();
 
 // Snake's gameplay position in mm (y up), or nullptr when no player exists (menus, loading).

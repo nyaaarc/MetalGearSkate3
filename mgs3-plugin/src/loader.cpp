@@ -64,19 +64,23 @@ void describe(DWORD64 address, char* out, size_t size) {
 
 LONG g_crashing = 0;
 
-void report_crash(EXCEPTION_POINTERS* info) {
+// The crashing (or faulting) thread's stack, module+offset per frame.
+void log_stack(const char* tag, EXCEPTION_POINTERS* info) {
   const DWORD code = info->ExceptionRecord->ExceptionCode;
-  if (InterlockedExchange(&g_crashing, 1)) return;
   char where[MAX_PATH + 32];
   describe(reinterpret_cast<DWORD64>(info->ExceptionRecord->ExceptionAddress), where, sizeof(where));
-  log_line("crash: exception 0x%08lX at %s (thread %lu); stack:", code, where, GetCurrentThreadId());
+  const ULONG_PTR* p = info->ExceptionRecord->ExceptionInformation;
+  log_line("%s: exception 0x%08lX at %s (thread %lu, %s 0x%llx); stack:", tag, code, where, GetCurrentThreadId(),
+           code == EXCEPTION_ACCESS_VIOLATION ? (p[0] == 1 ? "writing" : p[0] == 8 ? "executing" : "reading") : "info",
+           static_cast<unsigned long long>(info->ExceptionRecord->NumberParameters > 1 ? p[1] : 0));
   CONTEXT ctx = *info->ContextRecord;
   for (int i = 0; i < 32 && ctx.Rip; ++i) {
     describe(ctx.Rip, where, sizeof(where));
-    log_line("crash:   %s", where);
+    log_line("%s:   %s", tag, where);
     DWORD64 image = 0;
     PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(ctx.Rip, &image, nullptr);
     if (!fn) {
+      if (IsBadReadPtr(reinterpret_cast<void*>(ctx.Rsp), 8)) break;
       ctx.Rip = *reinterpret_cast<DWORD64*>(ctx.Rsp);
       ctx.Rsp += 8;
       continue;
@@ -85,6 +89,11 @@ void report_crash(EXCEPTION_POINTERS* info) {
     DWORD64 frame = 0;
     RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, ctx.Rip, fn, &ctx, &handler_data, &frame, nullptr);
   }
+}
+
+void report_crash(EXCEPTION_POINTERS* info) {
+  if (InterlockedExchange(&g_crashing, 1)) return;
+  log_stack("crash", info);
   const auto dump = g_dir / L"MetalGearSkate.crash.dmp";
   HANDLE file = CreateFileW(dump.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file != INVALID_HANDLE_VALUE) {
@@ -107,10 +116,25 @@ void report_crash(EXCEPTION_POINTERS* info) {
   InterlockedExchange(&g_crashing, 0);
 }
 
-// Heap corruption and fail-fast are fatal whoever handles them: report at first chance.
+// Heap corruption and fail-fast are fatal whoever handles them: report at first chance. Access
+// violations and other faults are logged (stack only, a few per session) at first chance too:
+// something in the process replaces our unhandled-exception filter, so a game crash after a core
+// reload otherwise leaves no trace. The game or its DRM may raise and handle some on purpose,
+// hence log-only and only once a core has started.
+LONG g_faults_logged = 0;
+constexpr LONG kMaxFaultsLogged = 8;
+
 LONG CALLBACK on_fatal(EXCEPTION_POINTERS* info) {
   const DWORD code = info->ExceptionRecord->ExceptionCode;
-  if (code == 0xC0000374 /* heap corruption */ || code == 0xC0000409 /* fail fast */) report_crash(info);
+  if (code == 0xC0000374 /* heap corruption */ || code == 0xC0000409 /* fail fast */) {
+    report_crash(info);
+  } else if ((code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION ||
+              code == EXCEPTION_PRIV_INSTRUCTION || code == EXCEPTION_STACK_OVERFLOW ||
+              code == EXCEPTION_SINGLE_STEP) &&
+             g_shared.generation >= 1 && !g_crashing &&
+             InterlockedIncrement(&g_faults_logged) <= kMaxFaultsLogged) {
+    log_stack("fault", info);
+  }
   return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -166,10 +190,15 @@ Core load_core(HMODULE ffi) {
 
 void unload_core(Core& c) {
   if (!c.module) return;
-  if (c.stop) c.stop();
-  FreeLibrary(c.module);
-  std::error_code ec;
-  std::filesystem::remove(c.copy, ec);
+  // A core that couldn't let go of a hook (a thread stuck inside, or another module hooked over
+  // ours) stays loaded: it is inert, and freeing it would leave code jumping into freed memory.
+  if (!c.stop || c.stop()) {
+    FreeLibrary(c.module);
+    std::error_code ec;
+    std::filesystem::remove(c.copy, ec);
+  } else {
+    log_line("core %u left loaded (not safe to free)", g_shared.generation);
+  }
   c = {};
 }
 

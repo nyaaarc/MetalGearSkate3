@@ -11,6 +11,7 @@
 #include <safetyhook.hpp>
 
 #include "game.hpp"
+#include "hooks.hpp"
 #include "log.hpp"
 #include "skate.hpp"
 
@@ -83,6 +84,8 @@ std::atomic<float> g_orbit_yaw{90.f}, g_orbit_dist{2500.f}, g_orbit_height{1200.
 constexpr float kOrbitLookMm = 900.f;
 
 void __fastcall on_update(uint8_t* cam) {
+  hooks::Guard guard;
+  if (hooks::stopping()) return g_hook.call<void>(cam);
   if (g_driving.load(std::memory_order_relaxed) && cam == g_main) {
     float c[skate::kCameraFloats];
     bool have = false;
@@ -157,7 +160,9 @@ bool init() {
   return static_cast<bool>(g_hook);
 }
 
-void stop() { g_hook.reset(); }
+void disable_hooks() { hooks::disable(g_hook); }
+
+void stop() { hooks::release(g_hook); }
 
 void set_driving(bool on) { g_driving = on; }
 

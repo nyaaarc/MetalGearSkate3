@@ -1,4 +1,5 @@
 #include "game.hpp"
+#include "hooks.hpp"
 
 #include <windows.h>
 #include <intrin.h>
@@ -80,6 +81,8 @@ char g_pending_stage[16] = {};
 SafetyHookInline g_set_area_hook, g_change_scenario_hook;
 
 void __fastcall on_set_area(int id, const char* dirname) {
+  hooks::Guard guard;
+  if (hooks::stopping()) return g_set_area_hook.call<void>(id, dirname);
   short result = 0;
   int load_request = g_load_request ? *g_load_request : -1;
   if (g_linkvarbuf && *g_linkvarbuf) memcpy(&result, *g_linkvarbuf + 2, sizeof(result));
@@ -92,6 +95,8 @@ void __fastcall on_set_area(int id, const char* dirname) {
 }
 
 void __fastcall on_change_scenario(unsigned int code) {
+  hooks::Guard guard;
+  if (hooks::stopping()) return g_change_scenario_hook.call<void>(code);
   log("game: GCL_ChangeSenerioCode(0x%06X)", code);
   g_change_scenario_hook.call<void>(code);
 }  // guarded by g_pad_mutex; empty = nothing pending
@@ -143,6 +148,8 @@ std::deque<Injection> g_inject;  // guarded by g_pad_mutex; front plays first
 std::atomic<bool> g_engine_takes_injection{false};
 
 void __fastcall on_pad_copy(uint8_t* dst, uint8_t* src) {
+  hooks::Guard guard;
+  if (hooks::stopping()) return g_pad_copy_hook.call<void>(dst, src);
   if (src == g_pads) {  // pad 0
     {
       std::lock_guard lock(g_pad_mutex);
@@ -430,12 +437,18 @@ int16_t* snake_target_yaw() {
 
 uint8_t* linkvar() { return g_linkvarbuf ? *g_linkvarbuf : nullptr; }
 
+void disable_hooks() {
+  hooks::disable(g_pad_copy_hook);
+  hooks::disable(g_set_area_hook);
+  hooks::disable(g_change_scenario_hook);
+}
+
 void stop() {
   g_block_input = false;
   g_engine_takes_injection = false;
-  g_pad_copy_hook.reset();
-  g_set_area_hook.reset();
-  g_change_scenario_hook.reset();
+  hooks::release(g_pad_copy_hook);
+  hooks::release(g_set_area_hook);
+  hooks::release(g_change_scenario_hook);
   {
     std::lock_guard lock(g_pad_mutex);
     g_inject.clear();

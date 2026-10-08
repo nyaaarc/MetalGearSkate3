@@ -10,6 +10,7 @@
 #include <set>
 #include <string>
 
+#include "hooks.hpp"
 #include "log.hpp"
 
 namespace {
@@ -65,6 +66,7 @@ void describe(uintptr_t address, char* out, size_t size) {
 }
 
 LONG CALLBACK on_exception(EXCEPTION_POINTERS* info) {
+  hooks::Guard guard;  // any thread's exception passes through here (see hooks.hpp)
   if (info->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP) return EXCEPTION_CONTINUE_SEARCH;
   CONTEXT* c = info->ContextRecord;
   if (!(c->Dr6 & 1)) return EXCEPTION_CONTINUE_SEARCH;

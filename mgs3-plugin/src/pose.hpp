@@ -19,6 +19,8 @@ constexpr int kSnakeBones = 57;
 bool init();
 
 // Removes the hook and forgets the published pose (core unload).
+// Put the original bytes back under the hook (trampoline kept; see hooks.hpp).
+void disable_hooks();
 void stop();
 
 // From the skate thread: the latest pose (kSnakeBones * 16 floats), or nullptr to stop posing.

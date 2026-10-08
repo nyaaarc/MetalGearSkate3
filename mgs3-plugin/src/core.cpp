@@ -18,6 +18,7 @@
 #include "core.hpp"
 #include "game.hpp"
 #include "hang.hpp"
+#include "hooks.hpp"
 #include "log.hpp"
 #include "pose.hpp"
 #include "render.hpp"
@@ -129,7 +130,24 @@ extern "C" __declspec(dllexport) bool __cdecl mgsk_core_start(const wchar_t* plu
   return g_init_thread != nullptr;
 }
 
-extern "C" __declspec(dllexport) void __cdecl mgsk_core_stop() {
+// Waits until no thread is inside one of our hook functions (counted by hooks::Guard), seen for
+// several checks in a row. False on timeout (logged).
+bool wait_idle(DWORD timeout_ms) {
+  const DWORD t0 = GetTickCount();
+  int quiet = 0;
+  while (GetTickCount() - t0 < timeout_ms) {
+    if (hooks::g_in_flight.load(std::memory_order_acquire) == 0) {
+      if (++quiet >= 5) return true;
+    } else {
+      quiet = 0;
+    }
+    Sleep(10);
+  }
+  log("core: %d thread(s) still inside our hooks after %lu ms", hooks::g_in_flight.load(), timeout_ms);
+  return false;
+}
+
+extern "C" __declspec(dllexport) bool __cdecl mgsk_core_stop() {
   const DWORD t0 = GetTickCount();
   g_stop = true;
   if (g_init_thread) {
@@ -137,21 +155,48 @@ extern "C" __declspec(dllexport) void __cdecl mgsk_core_stop() {
     CloseHandle(g_init_thread);
     g_init_thread = nullptr;
   }
+  // Each phase timed: a slow stop is a sign of a thread or hook that won't let go.
+  DWORD tp = GetTickCount();
+  auto phase = [&](const char* name) {
+    const DWORD now = GetTickCount();
+    if (now - tp > 50) log("core: stop %s took %lu ms", name, now - tp);
+    tp = now;
+  };
+  phase("init thread");
+  // From here every hook only passes calls through (hooks.hpp).
+  hooks::g_stopping = true;
   if (g_started_modules) {
-    // Users of the hooks first, then the hooks; the skate thread hands its session over.
+    // Our own threads first; the skate thread hands its session over.
     control::stop();
+    phase("control");
     hang::stop();
+    phase("hang");
     skate::stop();
+    phase("skate");
+  }
+  watch_stop();
+  phase("watch");
+  // Original bytes back under every hook (trampolines kept), then wait for any thread still
+  // inside one (e.g. blocked in the real Present) to leave before anything is freed.
+  render::disable_hooks();
+  camera::disable_hooks();
+  pose::disable_hooks();
+  game::disable_hooks();
+  phase("disable hooks");
+  const bool idle = wait_idle(3000);
+  phase("wait idle");
+  if (g_started_modules) {
     render::stop();
     camera::stop();
     pose::stop();
   }
   game::stop();
-  watch_stop();
-  // Let any game thread still running in one of our (now removed) hooks finish before the
-  // module goes away.
-  Sleep(250);
-  log("core %u stopped in %lu ms", g_shared ? g_shared->generation : 0, GetTickCount() - t0);
+  phase("release");
+  const bool safe = idle && !hooks::g_unsafe;
+  if (hooks::g_unsafe) log("core: a hook was hooked over by another module; leaving this core loaded");
+  log("core %u stopped in %lu ms%s", g_shared ? g_shared->generation : 0, GetTickCount() - t0,
+      safe ? "" : " (not safe to free)");
   log_close();
   g_started_modules = false;
+  return safe;
 }

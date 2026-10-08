@@ -13,6 +13,8 @@ namespace camera {
 bool init();
 
 // Removes the hook (core unload).
+// Put the original bytes back under the hook (trampoline kept; see hooks.hpp).
+void disable_hooks();
 void stop();
 
 // Drive the game camera from the skate camera (only has an effect while skating).

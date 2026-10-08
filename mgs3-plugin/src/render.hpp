@@ -23,6 +23,8 @@ namespace render {
 void start(const std::filesystem::path& plugin_dir, HMODULE ffi);
 
 // Removes the hooks and releases everything created on the game's device (core unload).
+// Put the original bytes back under every hook (trampolines kept; see hooks.hpp).
+void disable_hooks();
 void stop();
 
 // Test harness `render <key> <value>`: change a setting live (not saved to the ini).

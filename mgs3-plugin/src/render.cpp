@@ -23,6 +23,7 @@
 
 #include "camera.hpp"
 #include "game.hpp"
+#include "hooks.hpp"
 #include "log.hpp"
 #include "pose.hpp"
 #include "skate.hpp"
@@ -1759,7 +1760,9 @@ void end_skin_frame() {
 
 HRESULT STDMETHODCALLTYPE on_map(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub, D3D11_MAP type, UINT flags,
                                  D3D11_MAPPED_SUBRESOURCE* out) {
+  hooks::Guard guard;
   const HRESULT hr = g_map_hook.stdcall<HRESULT>(c, res, sub, type, flags, out);
+  if (hooks::stopping()) return hr;
   if (SUCCEEDED(hr) && c == g_cap_context && sub == 0 && out && out->pData && type != D3D11_MAP_READ &&
       is_globals(res)) {
     std::lock_guard lock(g_cap_mutex);
@@ -1775,7 +1778,10 @@ HRESULT STDMETHODCALLTYPE on_map(ID3D11DeviceContext* c, ID3D11Resource* res, UI
 }
 
 void STDMETHODCALLTYPE on_unmap(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub) {
-  if (c == g_cap_context && sub == 0) {
+  hooks::Guard guard;
+  // Stopping: nothing is written into mappings any more (a stale pending entry would point at
+  // memory the driver has already reused).
+  if (c == g_cap_context && sub == 0 && !hooks::stopping()) {
     std::lock_guard lock(g_cap_mutex);
     for (Pending& p : g_pending_maps) {
       if (p.res == res) {
@@ -1796,7 +1802,8 @@ void STDMETHODCALLTYPE on_unmap(ID3D11DeviceContext* c, ID3D11Resource* res, UIN
 
 void STDMETHODCALLTYPE on_update(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub, const D3D11_BOX* box,
                                  const void* src, UINT row_pitch, UINT depth_pitch) {
-  if (c == g_cap_context && sub == 0 && src && is_globals(res)) {
+  hooks::Guard guard;
+  if (c == g_cap_context && sub == 0 && src && is_globals(res) && !hooks::stopping()) {
     std::lock_guard lock(g_cap_mutex);
     ++g_cap_updates;
     if (!box) {
@@ -2429,6 +2436,8 @@ void before_present(IDXGISwapChain* swap, UINT flags) {
 }
 
 HRESULT STDMETHODCALLTYPE on_present(IDXGISwapChain* swap, UINT sync, UINT flags) {
+  hooks::Guard guard;
+  if (hooks::stopping()) return g_present_hook.stdcall<HRESULT>(swap, sync, flags);
   const bool outer = !t_in_present;
   if (outer) {
     t_in_present = true;
@@ -2440,6 +2449,8 @@ HRESULT STDMETHODCALLTYPE on_present(IDXGISwapChain* swap, UINT sync, UINT flags
 }
 
 HRESULT STDMETHODCALLTYPE on_present1(IDXGISwapChain1* swap, UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS* params) {
+  hooks::Guard guard;
+  if (hooks::stopping()) return g_present1_hook.stdcall<HRESULT>(swap, sync, flags, params);
   const bool outer = !t_in_present;
   if (outer) {
     t_in_present = true;
@@ -2504,15 +2515,23 @@ bool install_hooks() {
 
 }  // namespace
 
+void disable_hooks() {
+  hooks::disable(g_present_hook);
+  hooks::disable(g_present1_hook);
+  hooks::disable(g_map_hook);
+  hooks::disable(g_unmap_hook);
+  hooks::disable(g_update_hook);
+}
+
+// After disable_hooks and hooks::wait_idle: no thread is inside a hook, so the hooks and what they
+// used can go.
 void stop() {
-  g_present_hook.reset();
-  g_present1_hook.reset();
-  g_map_hook.reset();
-  g_unmap_hook.reset();
-  g_update_hook.reset();
+  hooks::release(g_present_hook);
+  hooks::release(g_present1_hook);
+  hooks::release(g_map_hook);
+  hooks::release(g_unmap_hook);
+  hooks::release(g_update_hook);
   g_hooked = false;
-  // A frame already inside the hooks finishes before its resources go.
-  Sleep(100);
   {
     std::lock_guard lock(g_cap_mutex);
     g_cap_context = nullptr;

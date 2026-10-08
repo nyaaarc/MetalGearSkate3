@@ -11,6 +11,7 @@
 #include <safetyhook.hpp>
 
 #include "game.hpp"
+#include "hooks.hpp"
 #include "log.hpp"
 
 namespace pose {
@@ -80,6 +81,8 @@ bool is_snake(const uint8_t* obj, const float origin[3], bool& relative) {
 }
 
 void __fastcall on_bone_pass(uint8_t* obj, void* arg2) {
+  hooks::Guard guard;
+  if (hooks::stopping()) return g_hook.call<void>(obj, arg2);
   g_calls.fetch_add(1, std::memory_order_relaxed);
   int count = 0;
   memcpy(&count, obj + kObjBoneCount, sizeof(count));
@@ -117,8 +120,10 @@ void __fastcall on_bone_pass(uint8_t* obj, void* arg2) {
 
 }  // namespace
 
+void disable_hooks() { hooks::disable(g_hook); }
+
 void stop() {
-  g_hook.reset();
+  hooks::release(g_hook);
   std::lock_guard lock(g_mutex);
   g_active = false;
 }
