@@ -40,11 +40,13 @@ constexpr float kMaxDrop = 4.f;
 // The floor is looked for below this far above the root: in a wipeout the root sinks ~0.7 m into it.
 constexpr float kFloorProbe = 1.5f;
 // MGS3 runs its own gravity on Snake between our writes wherever *its* collision has no floor
-// under him, which can differ from the .geom the skater rides. A drop of more than this (mm)
-// between two writes means the game has him falling; this many ticks of it while the engine
-// says the skater is on the ground means the game won't hold him there.
-constexpr float kGameDropMm = 20.f;
-constexpr int kGameFallTicks = 45;
+// under him, which can differ from the .geom the skater rides. The game also nudges him a little
+// on ordinary floor (it settles him to its own idea of his height), so only a drop this big
+// (mm) between two writes counts: by then his fall speed has built up over a fraction of a
+// second. This many such ticks in a row while the engine says the skater is on the ground means
+// the game won't hold Snake there.
+constexpr float kGameDropMm = 150.f;
+constexpr int kGameFallTicks = 10;
 
 struct Ffi {
   decltype(&mgsk_session_new) session_new;
@@ -477,7 +479,7 @@ DWORD WINAPI run(LPVOID) {
     if (toggled) {
       if (skating) {
         skating = false;
-        if (game_falling > 5) {
+        if (game_falling > 0) {
           // Hand Snake back where the game's own floor holds him, or he falls (to his death).
           *snake = {game_safe.at[0] * kMmPerUnit, game_safe.at[1] * kMmPerUnit + kSnakeHeightMm,
                     game_safe.at[2] * kMmPerUnit};
