@@ -31,6 +31,9 @@ with the game's camera following. See "What works" below.
      [extract-xiso](https://github.com/XboxDev/extract-xiso) and converts the skate data from it with
      the converter of [2010 Rust Rewrite Mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup)
      v0.4.0, into `%LOCALAPPDATA%\MetalGearSkate` (about 180 MB; the 6 GB unpacked copy can be deleted after);
+   - with Python 3 and numpy installed, exports the skater's sounds from your disc (decoded with
+     [vgmstream](https://github.com/vgmstream/vgmstream) r2117; about 1.3 GB, a few minutes);
+     without them skating works, silently;
    - writes `plugins\MetalGearSkate.ini` and, if Python is installed, rides the engine for 10 s to check it.
 
    Every download is asked for first and pinned by version and SHA-256. Options:
@@ -104,6 +107,13 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
   railing tops; `skate-ffi/src/rails.rs`) and gives them to the engine as rails. Offline,
   `tools/rails_check.py --grind` ollies onto 0.5 m ledges in s091a and the engine grinds
   (FiftyFifty/FiveO). Not yet tried in game.
+- The skater's sound is Skate 3's own audio runtime (`skate-audio` from the Skate 3 Rust Engine:
+  the AEMS patch programs, voice graph, MixMap, Splice one-shots and granular rolling bed),
+  driven each engine tick by the engine's audio state and played through the default output
+  device while skating: rolling by speed and surface, pushes, pops, flips, landings, grinds,
+  skids, bails. Offline, `tools/audio_check.py` rides pushes, an ollie, a kickflip, a brake, the
+  grind and the bail recipes in s091a and every one makes sound on the right ticks (the landing
+  is the loudest moment, the grind sounds through `GrindFiftyFifty`). Not yet heard in game.
 - Retargeting groundwork: Snake's 57-bone skeleton decoded from `sna_def.mdl` (`tools/mdl_bones.py`),
   the skater's 36 bones exported (`mgsk_bone_count`/`mgsk_bone_name`/`mgsk_bones`), and a
   Snake-to-skater bone map with axis and rest-pose notes in `docs/retarget.json`.
@@ -113,7 +123,9 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 - A stable lookup for the camera and skeleton
 - A held weapon and Snake's shadow are unchecked while skating (his gear and head now follow the pose)
 - Board textures not yet checked in game (simple diffuse lighting, no specular)
-- Settings menu, audio
+- Settings menu
+- Audio beyond the skater: Skate 3's ambience, world emitters and speech aren't played (MGS3's own
+  sound keeps playing); the skater's sound hasn't been listened to in game yet
 - Setup is tested in dry runs and data-only runs (ISO → extract → convert → engine check); a full
   install on a clean machine hasn't been tried yet
 
@@ -125,14 +137,21 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 - Repository structure follows [GTA San AnSkateas](https://github.com/ryglizzy/GTA-San-AnSkateas) by ryglizzy.
 - Direct3D 11 hooking approach (Present, state save/restore, coexisting hooks) studied from
   [MGSHDFix](https://github.com/ShizCalev/MGSHDFix) by ShizCalev and contributors (MIT).
+- Skater audio: `skate-audio` / `skate-audio-fma` (vendored in `mashup/`), the host files in
+  `skate-ffi/src/audio/` (ported from `game_audio/`) and the disc audio export in
+  `tools/skate_audio_export/` (`tools/asset_pipeline/`) all come from
+  [skate-3-rust-engine](https://github.com/SK8-ENGINE/skate-3-rust-engine) at `b3c96793` (GPL-3.0),
+  whose audio port credits its own specs and the community's research; the export's BIG/RefPack
+  readers are MIT (Skate 3 Custom Engine Layer contributors, notices kept with them).
 - Grind rail finder (`skate-ffi/src/rails.rs`) ported from `render_anim/src/skate/rails.rs` in
   [2010 Rust Rewrite Mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup) by chasmlol (Apache-2.0).
 - Setup downloads, each under its own licence (kept beside the files it installs):
   [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) by ThirteenAG (MIT),
   [MGSHDFix](https://github.com/ShizCalev/MGSHDFix) (MIT, optional),
-  [extract-xiso](https://github.com/XboxDev/extract-xiso) (its `LICENSE.TXT`), and the Skate 3 data
+  [extract-xiso](https://github.com/XboxDev/extract-xiso) (its `LICENSE.TXT`), the Skate 3 data
   converter from [2010 Rust Rewrite Mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup) v0.4.0
-  (Apache-2.0, with its NumPy, Pillow and Python licences).
+  (Apache-2.0, with its NumPy, Pillow and Python licences) and
+  [vgmstream](https://github.com/vgmstream/vgmstream) r2117 (ISC, its `COPYING`).
 - Release zips also carry the licences of [safetyhook](https://github.com/cursey/safetyhook) (BSL-1.0),
   Zydis/Zycore (MIT) and the Rust crates linked into `skate_ffi.dll` (`licenses/rust-crates.md`).
 - MGS3 format research: Jayveer, Joy-Division, GirianSeed and others; see `docs/formats.md`.
