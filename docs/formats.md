@@ -447,6 +447,17 @@ shadow-like draws) appeared in this frame.
   (translation only). Rigid gear draws use single slots placing the model at its world position
   (relative to his object or the draw's origin) and move with the nearest joint's delta
   (render.cpp anchor_slot / move_with_anchor).
+- **Held weapons (RPG, s091a):** rigid draws on their own origin, which the game puts on the
+  joint the item hangs from: 26 mm from game joint 42 (main piece, 11 draws a frame) and 72 mm
+  from joint 43 (second piece), both hand-area joints. Slot 0 is the item's rotation with zero
+  translation (the rest of the 64 slots hold stale data). That near-identity, zero-translation
+  slot also passes for his root bone, so matching alone misplaced it (~650 mm off). The plugin
+  checks first: a draw whose origin is more than 200 mm from his object's yet within 100 mm of
+  one of his game joints (not the head, whose rig sits ~120 mm off) is a held item, and every
+  slot moves by that joint's delta (render.cpp held_joint). Measured after posing: the RPG's
+  origin 25 mm from our joint 42 (73 mm from 43, as the game has it). While he skates the
+  weapon's own draw is culled by the game when his frozen object is far from the camera (e.g.
+  after `skate on` far from where he got on), so it isn't drawn there at all.
 - **Snake's shadow:** not in the $Globals stream. After posing, no $Globals palette slot anywhere
   in a frame is left on his game bones (`render dump_after 1` + `render palette now`), and there
   are no UpdateSubresource writes; whatever draws the shadow (users see a running-cycle shape

@@ -1231,6 +1231,32 @@ int match_bone(const float* slot, const float* bones, Vec origin, float& err) {
 constexpr float kAnchorMm = 450.f;
 constexpr float kAnchorDrawMm = 1500.f;
 constexpr int kHeadBone = 4;  // sna_def.mdl: the joint his headband and hair rig hangs from
+// A draw on its own origin this close (mm) to one of his joints is a held item riding it. (The
+// headband rig's origin is ~120 mm from the head joint, so the head is excluded explicitly.)
+constexpr float kHeldMm = 100.f;
+// The joint a held item's draw hangs on (its own origin within kHeldMm of one of his game joints,
+// other than the head, whose rig is handled apart), or -1. Checked before matching his bones: the
+// RPG's slot is a near-identity rotation with no translation, which also passes for his root.
+int held_joint(Vec d) {
+  if (g_skin.passes == 0) return -1;
+  const Vec Od{g_L_frame.x + d.x, g_L_frame.y + d.y, g_L_frame.z + d.z};
+  const Vec off = Od - g_skin.origin[0];
+  if (dot(off, off) <= 200.f * 200.f) return -1;  // his body's draws sit on his object's origin
+  int held = -1;
+  float held_d2 = kHeldMm * kHeldMm;
+  for (int k = 0; k < g_skin.passes; ++k) {
+    for (int b = 0; b < kSnakeBones; ++b) {
+      const float* m = g_skin.game[k] + b * 16;
+      const Vec gap{Od.x - m[12], Od.y - m[13], Od.z - m[14]};
+      if (dot(gap, gap) < held_d2) {
+        held_d2 = dot(gap, gap);
+        held = b;
+      }
+    }
+  }
+  return held == kHeadBone ? -1 : held;
+}
+
 int anchor_slot(const float* slot, Vec d) {
   if (g_skin.passes == 0) return -1;
   const float* game = g_skin.game[0];
@@ -1362,6 +1388,13 @@ bool pose_snake(uint8_t* globals) {
   // match his bones exactly, so matching alone picks them out.
   const uint64_t posed_before = g_skin.posed;
   auto* palette = reinterpret_cast<float*>(globals + kPaletteOffset);
+  if (const int held = held_joint(d); held >= 0) {
+    // A held item: every slot rides that joint (no matching; its slots aren't his bones).
+    for (UINT s = 0; s < kPaletteSlots; ++s) move_with_anchor(palette + s * 12, held * 2 + 1, d);
+    g_skin.posed += kPaletteSlots;
+    ++g_skin.draws;
+    return true;
+  }
   for (UINT s = 0; s < kPaletteSlots; ++s) {
     float* slot = palette + s * 12;
     const uint64_t h = hash_slot(slot);
