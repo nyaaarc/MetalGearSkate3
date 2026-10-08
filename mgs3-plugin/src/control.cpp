@@ -146,6 +146,10 @@ std::string run(const std::string& line) {
     skate::request(arg == "on");
     return "ok";
   }
+  if (verb == "recent") {  // recent reset: start collecting states/peak height afresh
+    skate::reset_recent();
+    return "ok";
+  }
   if (verb == "stealth") {
     std::string arg;
     in >> arg;
@@ -206,17 +210,19 @@ std::string keys_down() {
 
 void write_state() {
   const skate::Status sk = skate::status();
+  const skate::Recent recent = skate::recent();
   const render::Status rd = render::status();
   game::Pad pad{};
   const bool have_pad = game::pad(pad);
   const char* stage = game::current_stage();
   const game::Vec3* snake = game::snake_position();
   const int16_t* yaw = game::snake_yaw();
-  char json[1536];
+  char json[2048];
   snprintf(json, sizeof(json),
            "{\"tick_ms\": %lu, \"stage\": \"%s\", \"snake\": %s, \"snake_yaw\": %d,\n"
            " \"engine_ready\": %s, \"skating\": %s, \"skater_m\": [%.3f, %.3f, %.3f], \"skater_heading_deg\": %.1f,"
            " \"speed_mps\": %.2f, \"engine_state\": \"%s\", \"collision_triangles\": %d, \"rails\": %d,\n"
+           " \"recent\": {\"states\": \"%s\", \"max_y\": %.3f, \"min_y\": %.3f, \"max_speed_mps\": %.2f},\n"
            " \"pad\": {\"seen\": %s, \"buttons\": \"0x%04X\", \"lx\": %u, \"ly\": %u, \"rx\": %u, \"ry\": %u},"
            " \"injected_frames_left\": %d, \"keys_down\": [%s],\n"
            " \"render\": {\"hooked\": %s, \"presents\": %llu, \"drawn\": %llu, \"width\": %u, \"height\": %u}}\n",
@@ -225,7 +231,8 @@ void write_state() {
                     std::to_string(snake->z) + "]").c_str()
                  : "null",
            yaw ? *yaw : 0, sk.ready ? "true" : "false", sk.skating ? "true" : "false", sk.skater[0], sk.skater[1],
-           sk.skater[2], sk.heading_deg, sk.speed_mps, sk.engine_state, sk.collision_triangles, sk.rails, have_pad ? "true" : "false", pad.buttons,
+           sk.skater[2], sk.heading_deg, sk.speed_mps, sk.engine_state, sk.collision_triangles, sk.rails, recent.states,
+           recent.max_y, recent.min_y, recent.max_speed_mps, have_pad ? "true" : "false", pad.buttons,
            pad.left_x, pad.left_y, pad.right_x, pad.right_y, game::injected_frames_left(), keys_down().c_str(),
            rd.hooked ? "true" : "false", static_cast<unsigned long long>(rd.presents),
            static_cast<unsigned long long>(rd.drawn), rd.width, rd.height);

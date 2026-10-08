@@ -36,6 +36,17 @@ struct Status {
 };
 Status status();
 
+// What happened since the last reset_recent() (for the harness, which samples state only every
+// 200 ms): the engine states seen in order without repeats ("A,B,C", truncated), the skater's
+// highest and lowest root height (engine units) and top speed.
+struct Recent {
+  char states[160] = {};
+  float max_y = 0, min_y = 0;
+  float max_speed_mps = 0;
+};
+Recent recent();
+void reset_recent();
+
 // The board's body transforms from the latest engine tick: MGSK_BODY_COUNT column-major 4x4
 // matrices in engine units (m), MGSK_BODY_* order. False while not skating (or when the DLL
 // has no mgsk_board_pose). Safe from any thread; the renderer reads it every frame.

@@ -102,6 +102,27 @@ struct StartAt {
 StartAt g_start_at;
 std::mutex g_status_mutex;
 Status g_status;
+Recent g_recent;  // guarded by g_status_mutex
+bool g_recent_empty = true;
+
+// From the skate thread, every tick.
+void note_recent(const char* state, float y, float speed) {
+  std::lock_guard lock(g_status_mutex);
+  if (g_recent_empty) {
+    g_recent = {};
+    g_recent.max_y = g_recent.min_y = y;
+    g_recent_empty = false;
+  }
+  g_recent.max_y = std::max(g_recent.max_y, y);
+  g_recent.min_y = std::min(g_recent.min_y, y);
+  g_recent.max_speed_mps = std::max(g_recent.max_speed_mps, speed);
+  const char* last = strrchr(g_recent.states, ',');
+  last = last ? last + 1 : g_recent.states;
+  if (state[0] && strcmp(last, state) != 0) {
+    const size_t used = strlen(g_recent.states);
+    snprintf(g_recent.states + used, sizeof(g_recent.states) - used, "%s%s", used ? "," : "", state);
+  }
+}
 
 void set_status(const Status& s) {
   std::lock_guard lock(g_status_mutex);
@@ -553,6 +574,7 @@ DWORD WINAPI run(LPVOID) {
       const float dx = m[12] - st.skater[0], dz = m[14] - st.skater[2];
       st.speed_mps = std::sqrt(dx * dx + dz * dz) / period;
       if (f.state(session, st.engine_state, sizeof(st.engine_state)) < 0) st.engine_state[0] = 0;  // returns name length
+      note_recent(st.engine_state, m[13], st.speed_mps);
     }
     st.skater[0] = m[12];
     st.skater[1] = m[13];
@@ -607,6 +629,16 @@ bool board_pose(float (&out)[kBoardBodies * 16]) {
 Status status() {
   std::lock_guard lock(g_status_mutex);
   return g_status;
+}
+
+Recent recent() {
+  std::lock_guard lock(g_status_mutex);
+  return g_recent_empty ? Recent{} : g_recent;
+}
+
+void reset_recent() {
+  std::lock_guard lock(g_status_mutex);
+  g_recent_empty = true;
 }
 
 void start(const std::filesystem::path& plugin_dir, HMODULE ffi) {
