@@ -106,7 +106,10 @@ void load_stage_now(const char* name) {
   g_change_scenario(strcode("scenerio"));
   const short result = 9999;
   memcpy(link + kLinkResult, &result, sizeof(result));
-  *g_load_request = 3;
+  // The developer menu loads stages with request 16 (seen via the GM_SetArea log hook);
+  // MGSHDFix's "return to developer menu" uses 3. Request 3 for a real stage left Snake running
+  // a scripted route after the load.
+  *g_load_request = strcmp(name, "select") == 0 ? 3 : 16;
   log("game: loading stage %s", name);
 }
 
