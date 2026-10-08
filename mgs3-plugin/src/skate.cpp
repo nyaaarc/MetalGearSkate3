@@ -37,6 +37,8 @@ constexpr float kFallLimit = 3.f;
 // Over no floor, or this far (engine units) above the nearest, the skater has left the stage. MGS3
 // starts Snake's fall (and kills him) as soon as there's no ground under him, so act at once.
 constexpr float kMaxDrop = 4.f;
+// The floor is looked for below this far above the root: in a wipeout the root sinks ~0.7 m into it.
+constexpr float kFloorProbe = 1.5f;
 
 struct Ffi {
   decltype(&mgsk_session_new) session_new;
@@ -543,7 +545,7 @@ DWORD WINAPI run(LPVOID) {
     // Off the edge of the stage's collision the skater falls forever, and a Snake written far
     // below the floor dies (game over). Put him back where he last rode instead.
     float floor_y = 0.f;
-    const int floor_found = floor_fn ? floor_fn(session, m[12], m[13] + 0.5f, m[14], &floor_y) : 1;
+    const int floor_found = floor_fn ? floor_fn(session, m[12], m[13] + kFloorProbe, m[14], &floor_y) : 1;
     const bool off_stage = floor_found == 0 || (floor_found == 1 && floor_fn && m[13] - floor_y > kMaxDrop);
     if (off_stage || m[13] < last_good.at[1] - kFallLimit) {
       log("skate: left the stage at %.2f %.2f %.2f (floor %s); back to %.2f %.2f %.2f (m)", m[12], m[13], m[14],
