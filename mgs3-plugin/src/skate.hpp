@@ -62,13 +62,20 @@ constexpr int kBoardBodies = 7;
 bool board_pose(float (&out)[kBoardBodies * 16]);
 
 // The board and Snake's retargeted bones (pose::kSnakeBones * 16 floats) from one engine tick.
-// False unless both are available. For drawing them in step within a frame.
-bool tick_pose(float (&board)[kBoardBodies * 16], float (&snake)[57 * 16]);
+// False unless both are available. For drawing them in step within a frame. `tick` (optional)
+// gets a counter that goes up with each published pose.
+bool tick_pose(float (&board)[kBoardBodies * 16], float (&snake)[57 * 16], uint64_t* tick = nullptr);
 
 // The engine's chase camera from the latest tick: position (3, mm, game axes), basis (9, columns:
 // up x forward, up, forward), vertical field of view (degrees). False while not skating or when
 // the DLL has no mgsk_camera. Safe from any thread.
 constexpr int kCameraFloats = 13;
 bool camera(float (&out)[kCameraFloats]);
+
+// The chase camera, the board and Snake's bones from one published tick, read together (the
+// game camera and the pose drawn with it must agree, or Snake shakes against the scene while
+// moving). `tick` is tick_pose's counter.
+bool frame_snapshot(float (&cam)[kCameraFloats], float (&board)[kBoardBodies * 16], float (&snake)[57 * 16],
+                    uint64_t& tick);
 
 }  // namespace skate

@@ -16,10 +16,16 @@ std::atomic<bool> g_verbose{false};
 void log_open(const std::filesystem::path& path, bool append) {
   std::lock_guard lock(g_mutex);
   if (!append) {
-    // Keep the previous session's log (e.g. one that ended in a hang) as <name>.prev.log.
+    // Keep the last three sessions' logs (e.g. one that ended in a hang or a crash with no report):
+    // <name>.prev.log is the last, then .prev2.log and .prev3.log.
     std::error_code ignored;
-    std::filesystem::copy_file(path, std::filesystem::path(path).replace_extension(L".prev.log"),
-                               std::filesystem::copy_options::overwrite_existing, ignored);
+    const auto older = [&](int n) {
+      return std::filesystem::path(path).replace_extension(n == 1 ? L".prev.log" : (L".prev" + std::to_wstring(n) + L".log"));
+    };
+    for (int n = 3; n > 1; --n) {
+      std::filesystem::copy_file(older(n - 1), older(n), std::filesystem::copy_options::overwrite_existing, ignored);
+    }
+    std::filesystem::copy_file(path, older(1), std::filesystem::copy_options::overwrite_existing, ignored);
   }
   // Shared so the log can be read while the game runs (and the loader can append to it).
   g_file = _wfsopen(path.c_str(), append ? L"a" : L"w", _SH_DENYNO);

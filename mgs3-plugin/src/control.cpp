@@ -172,8 +172,10 @@ std::string run(const std::string& line) {
     return "ok";
   }
   if (verb == "render") {
+    // The value is the rest of the line (e.g. `render camera orbit 90 2500 1200`).
     std::string key, value;
-    in >> key >> value;
+    in >> key;
+    std::getline(in >> std::ws, value);
     if (!key.empty() && value.empty()) return "error: usage render [<key> <value>]";
     return render::set(key, value);
   }

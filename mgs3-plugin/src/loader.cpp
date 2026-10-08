@@ -46,8 +46,9 @@ void log_line(const char* fmt, ...) {
 
 // Crash reports: a fatal exception anywhere in the game (access violation, heap corruption, a
 // fail-fast) logs the crashing thread's stack (module+offset; the core's offsets map through
-// build/Release/MetalGearSkate.core.map) and writes plugins\MetalGearSkate.crash.dmp. Lives here
-// so it covers core reloads too.
+// build/Release/MetalGearSkate.core.map), writes plugins\MetalGearSkate.crash.dmp and keeps the
+// session's log as MetalGearSkate.crash.log plus a timestamped copy (the next launch overwrites
+// MetalGearSkate.log). Lives here so it covers core reloads too.
 void describe(DWORD64 address, char* out, size_t size) {
   HMODULE module = nullptr;
   if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -93,6 +94,16 @@ void report_crash(EXCEPTION_POINTERS* info) {
                       &mei, nullptr, nullptr);
     CloseHandle(file);
   }
+  // The log (with the stack above) outlives the next launches.
+  const auto log = g_dir / L"MetalGearSkate.log";
+  CopyFileW(log.c_str(), (g_dir / L"MetalGearSkate.crash.log").c_str(), FALSE);
+  SYSTEMTIME t;
+  GetLocalTime(&t);
+  wchar_t stamped[64];
+  swprintf_s(stamped, L"MetalGearSkate.crash-%04u%02u%02u-%02u%02u%02u.log", t.wYear, t.wMonth, t.wDay, t.wHour,
+             t.wMinute, t.wSecond);
+  CopyFileW(log.c_str(), (g_dir / stamped).c_str(), FALSE);
+  log_line("crash: log kept as MetalGearSkate.crash.log and %ls", stamped);
   InterlockedExchange(&g_crashing, 0);
 }
 

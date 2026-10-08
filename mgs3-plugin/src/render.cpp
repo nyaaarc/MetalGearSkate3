@@ -13,6 +13,7 @@
 #include <cstring>
 #include <mutex>
 #include <numbers>
+#include <sstream>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -89,7 +90,7 @@ std::string describe(const Settings& s) {
            "depth_bias=%.4f depth_debug=%d textures=%d debug=%d",
            s.camera == Settings::Camera::Skate  ? "skate"
            : s.camera == Settings::Camera::Game ? "game"
-           : s.camera == Settings::Camera::Drive ? "drive"
+           : s.camera == Settings::Camera::Drive ? (camera::orbiting() ? "drive(orbit)" : "drive")
                                                  : "object",
            s.skate_fov_deg, s.fov_deg, s.near_mm, s.far_mm, s.aspect, s.flip_z ? 1 : 0,
            s.depth_game ? 1 : 0, s.depth_bias, s.depth_debug ? 1 : 0, s.textures ? 1 : 0, s.debug ? 1 : 0);
@@ -131,8 +132,25 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
     else if (value == "game") n.camera = Settings::Camera::Game;
     else if (value == "object") n.camera = Settings::Camera::Object;
     else if (value == "drive") n.camera = Settings::Camera::Drive;
+    else if (value.rfind("orbit", 0) == 0) {
+      // orbit [<yaw_deg> <dist_mm> <height_mm>]: the drive camera on a circle around the skater.
+      float yaw = 90.f, dist = 2500.f, height = 1200.f;
+      std::stringstream args(value.substr(5));
+      args >> yaw >> dist >> height;
+      ok = dist > 100.f && dist < 50000.f && height > -10000.f && height < 20000.f;
+      if (ok) {
+        n.camera = Settings::Camera::Drive;
+        camera::set_orbit(true, yaw, dist, height);
+      }
+    }
     else ok = false;
+    if (ok && value.rfind("orbit", 0) != 0) camera::set_orbit(false);
     if (ok) camera::set_driving(n.camera == Settings::Camera::Drive);
+  }
+  else if (key == "coherent") {
+    bool on = true;
+    ok = parse_bool(value, on);
+    if (ok) camera::set_coherent(on);
   }
   else if (key == "drive_zoom") {
     float zoom = 0.f;
@@ -876,6 +894,11 @@ bool g_ovr_used = false;    // what the frame that just ended was drawn with (th
 Mat g_ovr_used_vp;
 Vec g_L_frame{}, g_L_prev{}, g_L_prev2{};
 bool g_L_known = false;
+// When some of Snake's draws were posed with an extrapolated L this frame: that L, and its distance
+// from the frame's real L once seen (diagnostics; -1 = not measured). Guarded by g_cap_mutex.
+bool g_L_extrapolated = false;
+Vec g_L_extrap{};
+float g_L_error_mm = -1;
 int g_L_history = 0;  // frames in a row with L seen (0, 1, 2+)
 uint64_t g_ovr_replaced = 0, g_ovr_early = 0, g_ovr_last_replaced = 0, g_ovr_last_early = 0;
 
@@ -986,6 +1009,10 @@ void note_look_at(const uint8_t* globals) {
   if (stage_translation(mat0)) {
     g_L_frame = {-mat0.at(0, 3), -mat0.at(1, 3), -mat0.at(2, 3)};
     g_L_known = true;
+    if (g_L_extrapolated) {
+      const Vec gap = g_L_frame - g_L_extrap;
+      g_L_error_mm = std::sqrt(dot(gap, gap));
+    }
   }
 }
 
@@ -1175,8 +1202,51 @@ struct SkinFrame {
   // the draw's own origin) for attachments (-1 = not Snake's)
   std::vector<std::pair<uint64_t, int>> slots;
   uint64_t posed = 0, draws = 0;
+  // Diagnostics for `render metrics` (counted every frame; cheap).
+  uint64_t tick = 0;          // the published pose this frame was posed from
+  float snap_error_mm = -1;   // |chosen camera placement's eye - L| (0 when it is the frame's camera)
+  int near_draws = 0;         // skinned draws on or near him (origin within 2 m)
+  int missed_draws = 0;       // near draws with none posed but slots close to his game bones
+  int partial_draws = 0;      // posed draws that also kept slots close to his game bones
+  int nearmiss_slots = 0;     // slots close to his game bones (loose) that weren't posed
+  int held_draws = 0;
+  float nm_rot = 1e9f, nm_move = 1e9f;  // closest near miss this frame (rotation sum, mm)
+  int nm_bone = -1, nm_pass = -1;
+  float held_mm = -1;         // largest held-item origin to our joint distance this frame
+  int early_posed = 0;        // draws posed before this frame's L was known (L extrapolated)
+  int early_skipped = 0;      // skinned draws skipped: L unknown and no history to extrapolate
 };
 SkinFrame g_skin;
+
+// `render metrics <frames>`: one CSV row per frame for the next N frames (guarded by g_cap_mutex).
+struct FrameMetric {
+  uint64_t frame;
+  double ms;
+  bool skating;
+  uint64_t tick;
+  int draws, posed_slots, near_draws, missed_draws, partial_draws, nearmiss_slots, held_draws;
+  float held_mm;
+  int early_posed, early_skipped;
+  float l_error_mm, deck_feet_mm, deck_feet_h_mm, object_mm;
+  float nm_rot, nm_move;
+  int nm_bone, nm_pass;
+  uint64_t camera_updates;  // camera::driven() at the frame's end (game camera updates we drove)
+  uint64_t camera_tick;     // the pose tick of the latest camera placement
+  float snap_error_mm;      // |eye of the placement Snake was posed from - the frame's L|
+  // Snake's root and the deck relative to the frame's camera reference L (mm): what the player
+  // sees move. A tick slip between camera and pose shows as a spike in their second difference.
+  float snake_rel[3], deck_rel[3];
+  // Where and how: our root in the world (mm), the deck's height (mm), the skater's speed (m/s),
+  // the driven camera's distance from our root (mm).
+  float root[3], deck_y, speed, camera_mm;
+  // The frame's L, and the camera after the game's update vs what we wrote (mm): eye_moved is how
+  // far the game moved the eye after our write; L_eye is |L - eye written| (what L tracks).
+  float L[3], eye_moved, target_moved, L_eye, L_target;
+};
+std::vector<FrameMetric> g_metrics;
+int g_metrics_left = 0;
+std::filesystem::path g_metrics_path;
+uint64_t g_metrics_frame = 0;
 constexpr int kAnchored = 1 << 20;
 // The board pose to draw at Present: the tick Snake was posed from this frame, so the two move in
 // step (guarded by g_cap_mutex; consumed by the board draw).
@@ -1221,6 +1291,39 @@ int match_bone(const float* slot, const float* bones, Vec origin, float& err) {
     }
   }
   return best;
+}
+
+// A slot that is close to one of his game bones without passing match_bone (diagnostics: such a
+// slot is drawn in the game's own pose).
+bool near_miss(const float* slot) {
+  bool found = false;
+  for (int k = 0; k < g_skin.passes; ++k) {
+    const float o[3] = {g_skin.origin[k].x, g_skin.origin[k].y, g_skin.origin[k].z};
+    for (int b = 0; b < kSnakeBones; ++b) {
+      const float* m = g_skin.game[k] + b * 16;
+      float rot = 0;
+      for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) rot += std::fabs(slot[r * 4 + c] - m[c * 4 + r]);
+      }
+      if (rot > 1.5f) continue;
+      float move = 0;
+      for (int r = 0; r < 3; ++r) {
+        const float t = m[12 + r] - o[r] - (m[0 * 4 + r] * g_rest[b][0] + m[1 * 4 + r] * g_rest[b][1] + m[2 * 4 + r] * g_rest[b][2]);
+        move = std::max(move, std::fabs(slot[r * 4 + 3] - t));
+      }
+      if (move <= 250.f) {
+        // Keep the closest near miss of the frame (bone, pass, errors) for the metrics.
+        if (rot + move / 100.f < g_skin.nm_rot + g_skin.nm_move / 100.f) {
+          g_skin.nm_rot = rot;
+          g_skin.nm_move = move;
+          g_skin.nm_bone = b;
+          g_skin.nm_pass = k;
+        }
+        found = true;
+      }
+    }
+  }
+  return found;
 }
 
 // Attachments that ride on Snake's bones without being them: his headband and hair (their own
@@ -1364,19 +1467,28 @@ void move_with_anchor(float* slot, int code, Vec d) {
 // one of Snake's. Caller holds g_cap_mutex.
 bool pose_snake(uint8_t* globals) {
   if (!g_rest_loaded || g_skin.state < 0) return false;
-  if (!g_L_known) {
-    // Some of his draws can come before this frame's first stage draw gives L. Skipping them
-    // drew those pieces in the game's own pose for a frame (a flicker of jitter against the
-    // board); extrapolate L from the last two frames instead (note_look_at replaces it).
-    if (g_L_history < 2) return false;
-    g_L_frame = {2.f * g_L_prev.x - g_L_prev2.x, 2.f * g_L_prev.y - g_L_prev2.y, 2.f * g_L_prev.z - g_L_prev2.z};
-  }
   Mat pers;
   Vec d;
   if (!main_camera_draw(globals, pers, d) || dot(d, d) < 1.f) return false;  // skinned draws only
+  const bool early = !g_L_known;
+  if (early) {
+    // Some of his draws can come before this frame's first stage draw gives L. Skipping them
+    // drew those pieces in the game's own pose for a frame (a flicker of jitter against the
+    // board); extrapolate L from the last two frames instead (note_look_at replaces it).
+    if (g_L_history < 2) {
+      ++g_skin.early_skipped;
+      return false;
+    }
+    g_L_frame = {2.f * g_L_prev.x - g_L_prev2.x, 2.f * g_L_prev.y - g_L_prev2.y, 2.f * g_L_prev.z - g_L_prev2.z};
+    g_L_extrapolated = true;
+    g_L_extrap = g_L_frame;
+  }
   if (g_skin.state == 0) {
     float objects[pose::kBoneHistory][16];
-    g_skin.have_board = skate::tick_pose(g_skin.board, g_skin.ours);
+    // Pose from the camera placement this frame is drawn with (its eye is the frame's L).
+    const float L[3] = {g_L_frame.x, g_L_frame.y, g_L_frame.z};
+    g_skin.have_board = camera::frame_pose_at(L, g_skin.board, g_skin.ours, g_skin.tick, g_skin.snap_error_mm) ||
+                        skate::tick_pose(g_skin.board, g_skin.ours, &g_skin.tick);
     const bool have_ours = g_skin.have_board || pose::current(g_skin.ours);
     g_skin.passes = have_ours ? pose::game_bone_history(g_skin.game, objects, pose::kBoneHistory) : 0;
     for (int k = 0; k < g_skin.passes; ++k) g_skin.origin[k] = {objects[k][12], objects[k][13], objects[k][14]};
@@ -1388,13 +1500,23 @@ bool pose_snake(uint8_t* globals) {
   // match his bones exactly, so matching alone picks them out.
   const uint64_t posed_before = g_skin.posed;
   auto* palette = reinterpret_cast<float*>(globals + kPaletteOffset);
+  const Vec Od{g_L_frame.x + d.x, g_L_frame.y + d.y, g_L_frame.z + d.z};
+  const Vec Ogap = Od - g_skin.origin[0];
+  const bool near_him = dot(Ogap, Ogap) < 2000.f * 2000.f;
   if (const int held = held_joint(d); held >= 0) {
     // A held item: every slot rides that joint (no matching; its slots aren't his bones).
     for (UINT s = 0; s < kPaletteSlots; ++s) move_with_anchor(palette + s * 12, held * 2 + 1, d);
     g_skin.posed += kPaletteSlots;
     ++g_skin.draws;
+    ++g_skin.held_draws;
+    const float* o = g_skin.ours + held * 16;
+    const Vec item{Od.x + palette[3], Od.y + palette[7], Od.z + palette[11]};
+    const Vec gap{item.x - o[12], item.y - o[13], item.z - o[14]};
+    g_skin.held_mm = std::max(g_skin.held_mm, std::sqrt(dot(gap, gap)));
+    if (early) ++g_skin.early_posed;
     return true;
   }
+  int draw_nearmiss = 0;
   for (UINT s = 0; s < kPaletteSlots; ++s) {
     float* slot = palette + s * 12;
     const uint64_t h = hash_slot(slot);
@@ -1420,7 +1542,10 @@ bool pose_snake(uint8_t* globals) {
       if (bone < 0) bone = anchor_slot(slot, d);
       g_skin.slots.emplace_back(h, bone);
     }
-    if (bone < 0) continue;
+    if (bone < 0) {
+      if (near_him && near_miss(slot)) ++draw_nearmiss;
+      continue;
+    }
     if (bone >= kAnchored) {
       move_with_anchor(slot, bone - kAnchored, d);
       ++g_skin.posed;
@@ -1452,19 +1577,145 @@ bool pose_snake(uint8_t* globals) {
     }
     ++g_skin.posed;
   }
-  if (g_skin.posed == posed_before) return false;
+  if (near_him) ++g_skin.near_draws;
+  g_skin.nearmiss_slots += draw_nearmiss;
+  if (g_skin.posed == posed_before) {
+    if (near_him && draw_nearmiss > 0) ++g_skin.missed_draws;
+    return false;
+  }
+  if (draw_nearmiss > 0) ++g_skin.partial_draws;
+  if (early) ++g_skin.early_posed;
   ++g_skin.draws;
   return true;
 }
 
+// One metrics row at the end of a frame; writes the CSV when the run is done. Caller holds
+// g_cap_mutex.
+void note_frame_metrics() {
+  ++g_metrics_frame;
+  if (g_metrics_left <= 0) return;
+  FrameMetric m{};
+  m.frame = g_metrics_frame;
+  LARGE_INTEGER now, freq;
+  QueryPerformanceCounter(&now);
+  QueryPerformanceFrequency(&freq);
+  m.ms = 1000.0 * static_cast<double>(now.QuadPart) / static_cast<double>(freq.QuadPart);
+  m.skating = skate::status().skating;
+  m.tick = g_skin.tick;
+  m.draws = static_cast<int>(g_skin.draws);
+  m.posed_slots = static_cast<int>(g_skin.posed);
+  m.near_draws = g_skin.near_draws;
+  m.missed_draws = g_skin.missed_draws;
+  m.partial_draws = g_skin.partial_draws;
+  m.nearmiss_slots = g_skin.nearmiss_slots;
+  m.held_draws = g_skin.held_draws;
+  m.held_mm = g_skin.held_mm;
+  m.early_posed = g_skin.early_posed;
+  m.early_skipped = g_skin.early_skipped;
+  m.l_error_mm = g_L_error_mm;
+  m.camera_updates = camera::driven();
+  m.camera_tick = camera::camera_tick();
+  m.snap_error_mm = g_skin.snap_error_mm;
+  for (int i = 0; i < 3; ++i) m.snake_rel[i] = m.deck_rel[i] = m.root[i] = NAN;
+  m.deck_y = m.camera_mm = NAN;
+  m.eye_moved = m.target_moved = m.L_eye = m.L_target = NAN;
+  for (int i = 0; i < 3; ++i) m.L[i] = g_L_history > 0 ? (i == 0 ? g_L_prev.x : i == 1 ? g_L_prev.y : g_L_prev.z) : NAN;
+  {
+    float ae[3], at[3], we[3], wt[3];
+    if (camera::camera_after(ae, at, we, wt)) {
+      auto dist = [](const float* a, const float* b) {
+        return std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+      };
+      m.eye_moved = dist(ae, we);
+      m.target_moved = dist(at, wt);
+      if (!std::isnan(m.L[0])) {
+        m.L_eye = dist(m.L, we);
+        m.L_target = dist(m.L, wt);
+      }
+    }
+  }
+  m.speed = skate::status().speed_mps;
+  if (g_skin.state == 1) {
+    for (int i = 0; i < 3; ++i) m.root[i] = g_skin.ours[12 + i];
+    if (g_skin.have_board) m.deck_y = g_skin.board[MGSK_BODY_DECK * 16 + 13] * 1000.f;
+    float eye[3];
+    if (camera::last_eye(eye)) {
+      const Vec gap{eye[0] - m.root[0], eye[1] - m.root[1], eye[2] - m.root[2]};
+      m.camera_mm = std::sqrt(dot(gap, gap));
+    }
+  }
+  if (g_skin.state == 1 && g_L_history > 0) {
+    const float L[3] = {g_L_prev.x, g_L_prev.y, g_L_prev.z};  // this frame's L (end_capture_frame stored it)
+    for (int i = 0; i < 3; ++i) m.snake_rel[i] = g_skin.ours[12 + i] - L[i];
+    if (g_skin.have_board) {
+      for (int i = 0; i < 3; ++i) m.deck_rel[i] = g_skin.board[MGSK_BODY_DECK * 16 + 12 + i] * 1000.f - L[i];
+    }
+  }
+  m.nm_bone = g_skin.nm_bone;
+  m.nm_pass = g_skin.nm_pass;
+  m.nm_rot = g_skin.nm_bone >= 0 ? g_skin.nm_rot : -1;
+  m.nm_move = g_skin.nm_bone >= 0 ? g_skin.nm_move : -1;
+  m.deck_feet_mm = m.deck_feet_h_mm = -1;
+  if (g_skin.state == 1 && g_skin.have_board) {
+    // Deck origin (engine body, metres) against the midpoint of our feet (bones 17 and 21, mm).
+    const float* deck = g_skin.board + MGSK_BODY_DECK * 16;
+    const float* l = g_skin.ours + 17 * 16;
+    const float* r = g_skin.ours + 21 * 16;
+    const Vec feet{(l[12] + r[12]) / 2, (l[13] + r[13]) / 2, (l[14] + r[14]) / 2};
+    const Vec gap{feet.x - deck[12] * 1000.f, feet.y - deck[13] * 1000.f, feet.z - deck[14] * 1000.f};
+    m.deck_feet_mm = std::sqrt(dot(gap, gap));
+    m.deck_feet_h_mm = std::sqrt(gap.x * gap.x + gap.z * gap.z);
+  }
+  m.object_mm = -1;
+  if (const game::Vec3* p = game::snake_position(); p && g_skin.passes > 0) {
+    const Vec gap{g_skin.origin[0].x - p->x, g_skin.origin[0].y - p->y, g_skin.origin[0].z - p->z};
+    m.object_mm = std::sqrt(dot(gap, gap));
+  }
+  g_metrics.push_back(m);
+  if (--g_metrics_left > 0) return;
+  FILE* file = nullptr;
+  if (_wfopen_s(&file, g_metrics_path.c_str(), L"w") == 0 && file) {
+    fprintf(file,
+            "frame,ms,skating,tick,draws,posed_slots,near_draws,missed_draws,partial_draws,nearmiss_slots,held_draws,"
+            "held_mm,early_posed,early_skipped,l_error_mm,deck_feet_mm,deck_feet_h_mm,object_mm,nm_bone,nm_pass,nm_rot,"
+            "nm_move_mm,camera_updates,camera_tick,snake_rel_x,snake_rel_y,snake_rel_z,deck_rel_x,deck_rel_y,"
+            "deck_rel_z,root_x,root_y,root_z,deck_y,speed,camera_mm,L_x,L_y,L_z,eye_moved,target_moved,L_eye,L_target,snap_error_mm\n");
+    for (const FrameMetric& e : g_metrics) {
+      fprintf(file, "%llu,%.2f,%d,%llu,%d,%d,%d,%d,%d,%d,%d,%.1f,%d,%d,%.1f,%.1f,%.1f,%.1f,%d,%d,%.3f,%.1f,%llu,%llu,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
+              static_cast<unsigned long long>(e.frame), e.ms, e.skating ? 1 : 0,
+              static_cast<unsigned long long>(e.tick), e.draws, e.posed_slots, e.near_draws, e.missed_draws,
+              e.partial_draws, e.nearmiss_slots, e.held_draws, e.held_mm, e.early_posed, e.early_skipped,
+              e.l_error_mm, e.deck_feet_mm, e.deck_feet_h_mm, e.object_mm, e.nm_bone, e.nm_pass, e.nm_rot,
+              e.nm_move, static_cast<unsigned long long>(e.camera_updates),
+              static_cast<unsigned long long>(e.camera_tick), e.snake_rel[0], e.snake_rel[1], e.snake_rel[2],
+              e.deck_rel[0], e.deck_rel[1], e.deck_rel[2], e.root[0], e.root[1], e.root[2], e.deck_y, e.speed,
+              e.camera_mm, e.L[0], e.L[1], e.L[2], e.eye_moved, e.target_moved, e.L_eye, e.L_target,
+              e.snap_error_mm);
+    }
+    fclose(file);
+  }
+  log("render: metrics: %zu frames -> %ls", g_metrics.size(), g_metrics_path.c_str());
+  g_metrics.clear();
+}
+
 void end_skin_frame() {
   if (g_skin.posed || g_skin.draws) pose::count_applied(g_skin.posed, g_skin.draws);
+  note_frame_metrics();
   g_frame_board_valid = g_skin.state == 1 && g_skin.have_board;
   if (g_frame_board_valid) memcpy(g_frame_board, g_skin.board, sizeof(g_frame_board));
   g_skin.state = 0;
   g_skin.have_body = false;
   g_skin.slots.clear();
   g_skin.posed = g_skin.draws = 0;
+  g_skin.near_draws = g_skin.missed_draws = g_skin.partial_draws = g_skin.nearmiss_slots = 0;
+  g_skin.held_draws = g_skin.early_posed = g_skin.early_skipped = 0;
+  g_skin.held_mm = -1;
+  g_skin.nm_rot = g_skin.nm_move = 1e9f;
+  g_skin.nm_bone = g_skin.nm_pass = -1;
+  g_L_error_mm = -1;
+  g_L_extrapolated = false;
+  g_skin.tick = 0;
+  g_skin.snap_error_mm = -1;
 }
 
 HRESULT STDMETHODCALLTYPE on_map(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub, D3D11_MAP type, UINT flags,
@@ -2162,6 +2413,7 @@ void start(const std::filesystem::path& plugin_dir, HMODULE ffi) {
   const auto ini = plugin_dir / L"MetalGearSkate.ini";
   load_settings(ini);
   g_dump_path = plugin_dir / L"MetalGearSkate.palette.txt";
+  g_metrics_path = plugin_dir / L"MetalGearSkate.metrics.csv";
   {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
@@ -2182,6 +2434,15 @@ std::string set(const std::string& key, const std::string& value) {
     std::lock_guard lock(g_cap_mutex);
     g_dump_state = 1;
     return "ok dumping next frame";
+  }
+  if (key == "metrics") {  // `render metrics <frames>`: per-frame CSV beside the plugin
+    const int frames = std::atoi(value.c_str());
+    if (frames < 1 || frames > 100000) return "error: usage render metrics <frames>";
+    std::lock_guard lock(g_cap_mutex);
+    g_metrics.clear();
+    g_metrics.reserve(frames);
+    g_metrics_left = frames;
+    return "ok recording " + std::to_string(frames) + " frames";
   }
   if (key == "capture") {  // `render capture now`: log the last frame's captured camera matrices
     const game::Vec3* p = game::snake_position();

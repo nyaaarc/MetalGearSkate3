@@ -156,6 +156,7 @@ bool g_camera_valid = false;
 // board and Snake from one tick (reading them separately mid-tick jittered him on the board).
 float g_snake[pose::kSnakeBones * 16];
 bool g_snake_valid = false;
+uint64_t g_pose_tick = 0;  // counts publishes with Snake's bones (same mutex), for diagnostics
 
 void publish_pose(const float* pose, const float* camera = nullptr, const float* snake = nullptr) {
   std::lock_guard lock(g_pose_mutex);
@@ -163,6 +164,7 @@ void publish_pose(const float* pose, const float* camera = nullptr, const float*
   g_pose_valid = pose != nullptr;
   if (snake) memcpy(g_snake, snake, sizeof(g_snake));
   g_snake_valid = snake != nullptr;
+  if (snake) ++g_pose_tick;
   if (camera) memcpy(g_camera, camera, sizeof(g_camera));
   g_camera_valid = camera != nullptr;
 }
@@ -789,11 +791,23 @@ bool camera(float (&out)[kCameraFloats]) {
   return g_camera_valid;
 }
 
-bool tick_pose(float (&board)[kBoardBodies * 16], float (&snake)[pose::kSnakeBones * 16]) {
+bool frame_snapshot(float (&cam)[kCameraFloats], float (&board)[kBoardBodies * 16],
+                    float (&snake)[pose::kSnakeBones * 16], uint64_t& tick) {
+  std::lock_guard lock(g_pose_mutex);
+  if (!g_camera_valid || !g_pose_valid || !g_snake_valid) return false;
+  memcpy(cam, g_camera, sizeof(g_camera));
+  memcpy(board, g_pose, sizeof(g_pose));
+  memcpy(snake, g_snake, sizeof(g_snake));
+  tick = g_pose_tick;
+  return true;
+}
+
+bool tick_pose(float (&board)[kBoardBodies * 16], float (&snake)[pose::kSnakeBones * 16], uint64_t* tick) {
   std::lock_guard lock(g_pose_mutex);
   if (!g_pose_valid || !g_snake_valid) return false;
   memcpy(board, g_pose, sizeof(g_pose));
   memcpy(snake, g_snake, sizeof(g_snake));
+  if (tick) *tick = g_pose_tick;
   return true;
 }
 
