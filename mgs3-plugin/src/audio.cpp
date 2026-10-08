@@ -8,6 +8,8 @@
 
 #include <atomic>
 #include <mutex>
+#include <string>
+#include <thread>
 
 #include "log.hpp"
 
@@ -148,19 +150,31 @@ bool start(HMODULE ffi, float volume) {
   return g_thread != nullptr;
 }
 
+// Starting a session's sound reads and decodes its banks (~20 s): done here, off the skate
+// thread, which keeps skating (silently) meanwhile. One at a time; stop() joins it.
+std::thread g_loader;
+std::string g_assets;
+
 bool use_session(MgskSession* session, const char* assets_dir) {
   if (!g_start) return false;
-  if (session && !g_running(session)) {
+  if (!session || g_running(session)) {
+    g_session = session;
+    return true;
+  }
+  if (g_loader.joinable()) g_loader.join();
+  g_assets = assets_dir;
+  g_session = nullptr;  // silent until this session's sound is up
+  g_loader = std::thread([session] {
     const DWORD t0 = GetTickCount();
-    const int banks = g_start(session, assets_dir);
+    const int banks = g_start(session, g_assets.c_str());
     if (banks < 0) {
       log("audio: the skater's sound did not start: %s (run setup's audio export)", g_error ? g_error() : "?");
-      g_session = nullptr;
-      return false;
+      return;
     }
     log("audio: Skate 3 audio runtime on (%d banks) in %lu ms", banks, GetTickCount() - t0);
-  }
-  g_session = session;
+    MgskSession* expected = nullptr;
+    g_session.compare_exchange_strong(expected, session);  // unless another session took over
+  });
   return true;
 }
 
@@ -168,6 +182,7 @@ void set_playing(bool playing) { g_playing = playing; }
 
 void stop() {
   g_stop = true;
+  if (g_loader.joinable()) g_loader.join();
   if (g_thread) {
     WaitForSingleObject(g_thread, INFINITE);
     CloseHandle(g_thread);

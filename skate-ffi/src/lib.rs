@@ -423,15 +423,19 @@ pub unsafe extern "C" fn mgsk_tick(session: *mut Session, controls: *const MgskC
 /// the session from then on. Returns the number of sound banks loaded, or -1 (`mgsk_last_error`).
 ///
 /// # Safety
-/// `session` is a live session; `assets_dir` is a NUL-terminated path.
+/// `session` is a live session (only its address is used); `assets_dir` is a NUL-terminated path.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mgsk_audio_start(session: *mut Session, assets_dir: *const c_char) -> i32 {
     guard(-1, || {
-        let session = unsafe { session.as_mut() }.ok_or("null session")?;
+        // The address is only a key: the engine may be ticking this session on another thread
+        // meanwhile (the plugin starts sound off its skate thread), so it is never dereferenced.
+        if session.is_null() {
+            return Err("null session".into());
+        }
         let root = path_from(assets_dir)?;
         let host = audio::host::AudioHost::start(&root)?;
         let banks = count_i32(host.started.banks)?;
-        let key = std::ptr::from_mut(session) as usize;
+        let key = session as usize;
         audio_outputs().insert(key, host.shared.clone());
         audio_hosts().insert(key, SessionAudio { observer: Default::default(), host });
         Ok(banks)
