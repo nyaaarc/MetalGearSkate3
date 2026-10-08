@@ -1223,8 +1223,12 @@ struct SkinFrame {
   float held_mm = -1;         // largest held-item origin to our joint distance this frame
   int early_posed = 0;        // draws posed before this frame's L was known (L extrapolated)
   int early_skipped = 0;      // skinned draws skipped: L unknown and no history to extrapolate
+  int own_draws = 0;          // not posing (not skating): his own body draws, unposed
 };
 SkinFrame g_skin;
+// Frames with at least one of Snake's draws, posed or his own (`state.render.snake_frames`;
+// against `presents` it tells the harness he is drawn, e.g. after `skate off`).
+std::atomic<uint64_t> g_snake_frames{0};
 
 // `render metrics <frames>`: one CSV row per frame for the next N frames (guarded by g_cap_mutex).
 struct FrameMetric {
@@ -1475,10 +1479,32 @@ void move_with_anchor(float* slot, int code, Vec d) {
   }
 }
 
+// Not posing (not skating): counts the draw if it is one of his own body draws, a skinned
+// main-camera draw on the origin of one of his recent render-object passes. Caller holds
+// g_cap_mutex.
+void count_own_draw(const uint8_t* globals) {
+  if (g_skin.passes == 0 || (!g_L_known && !g_L_extrapolated)) return;
+  Mat pers;
+  Vec d;
+  if (!main_camera_draw(globals, pers, d) || dot(d, d) < 1.f) return;
+  const Vec Od{g_L_frame.x + d.x, g_L_frame.y + d.y, g_L_frame.z + d.z};
+  for (int k = 0; k < g_skin.passes; ++k) {
+    const Vec gap = Od - g_skin.origin[k];
+    if (dot(gap, gap) <= 400.f * 400.f) {
+      ++g_skin.own_draws;
+      return;
+    }
+  }
+}
+
 // Rewrites Snake's palette in a $Globals image with the published pose; true if this draw was
 // one of Snake's. Caller holds g_cap_mutex.
 bool pose_snake(uint8_t* globals) {
-  if (!g_rest_loaded || g_skin.state < 0) return false;
+  if (!g_rest_loaded) return false;
+  if (g_skin.state < 0) {
+    count_own_draw(globals);
+    return false;
+  }
   Mat pers;
   Vec d;
   if (!main_camera_draw(globals, pers, d) || dot(d, d) < 1.f) return false;  // skinned draws only
@@ -1503,10 +1529,14 @@ bool pose_snake(uint8_t* globals) {
     g_skin.have_board = camera::frame_pose_at(L, g_skin.board, g_skin.ours, g_skin.tick, g_skin.snap_error_mm) ||
                         skate::tick_pose(g_skin.board, g_skin.ours, &g_skin.tick);
     const bool have_ours = g_skin.have_board || pose::current(g_skin.ours);
-    g_skin.passes = have_ours ? pose::game_bone_history(g_skin.game, objects, pose::kBoneHistory) : 0;
+    // His recent passes, posing or not (not posing, they pick out his own draws to count).
+    g_skin.passes = pose::game_bone_history(g_skin.game, objects, pose::kBoneHistory);
     for (int k = 0; k < g_skin.passes; ++k) g_skin.origin[k] = {objects[k][12], objects[k][13], objects[k][14]};
-    g_skin.state = g_skin.passes > 0 ? 1 : -1;
-    if (g_skin.state < 0) return false;
+    g_skin.state = have_ours && g_skin.passes > 0 ? 1 : -1;
+    if (g_skin.state < 0) {
+      count_own_draw(globals);
+      return false;
+    }
   }
   // No check of the draw's own origin: some of Snake's draws (about 22 a frame, ~640 mm above his
   // object) sit on another origin yet use palettes relative to his object's, and only his slots
@@ -1739,6 +1769,8 @@ void write_metrics() {
 
 void end_skin_frame() {
   if (g_skin.posed || g_skin.draws) pose::count_applied(g_skin.posed, g_skin.draws);
+  if (g_skin.draws || g_skin.own_draws) g_snake_frames.fetch_add(1, std::memory_order_relaxed);
+  g_skin.own_draws = 0;
   note_frame_metrics();
   g_frame_board_valid = g_skin.state == 1 && g_skin.have_board;
   if (g_frame_board_valid) memcpy(g_frame_board, g_skin.board, sizeof(g_frame_board));
@@ -2728,6 +2760,7 @@ Status status() {
   s.hooked = g_hooked;
   s.presents = g_presents;
   s.drawn = g_drawn;
+  s.snake_frames = g_snake_frames;
   s.width = g_width;
   s.height = g_height;
   return s;

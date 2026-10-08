@@ -38,6 +38,7 @@ struct Status {
   bool hooked = false;
   uint64_t presents = 0;  // Present calls seen
   uint64_t drawn = 0;     // frames we drew into
+  uint64_t snake_frames = 0;  // frames with one of Snake's draws (posed, or his own off the board)
   uint32_t width = 0, height = 0;  // last back buffer drawn into
 };
 Status status();

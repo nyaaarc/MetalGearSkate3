@@ -242,7 +242,8 @@ void write_state() {
            " \"recent\": {\"states\": \"%s\", \"max_y\": %.3f, \"min_y\": %.3f, \"max_speed_mps\": %.2f},\n"
            " \"pad\": {\"seen\": %s, \"buttons\": \"0x%04X\", \"lx\": %u, \"ly\": %u, \"rx\": %u, \"ry\": %u},"
            " \"injected_frames_left\": %d, \"keys_down\": [%s],\n"
-           " \"render\": {\"hooked\": %s, \"presents\": %llu, \"drawn\": %llu, \"width\": %u, \"height\": %u},\n"
+           " \"render\": {\"hooked\": %s, \"presents\": %llu, \"drawn\": %llu, \"snake_frames\": %llu, \"width\": %u,"
+           " \"height\": %u},\n"
            " \"audio\": {\"running\": %s, \"frames\": %llu, \"underruns\": %llu}}\n",
            GetTickCount(), core::shared() ? core::shared()->generation : 0u, stage ? stage : "",
            snake ? (std::string("[") + std::to_string(snake->x) + ", " + std::to_string(snake->y) + ", " +
@@ -253,7 +254,8 @@ void write_state() {
            recent.max_y, recent.min_y, recent.max_speed_mps, have_pad ? "true" : "false", pad.buttons,
            pad.left_x, pad.left_y, pad.right_x, pad.right_y, game::injected_frames_left(), keys_down().c_str(),
            rd.hooked ? "true" : "false", static_cast<unsigned long long>(rd.presents),
-           static_cast<unsigned long long>(rd.drawn), rd.width, rd.height, au.running ? "true" : "false",
+           static_cast<unsigned long long>(rd.drawn), static_cast<unsigned long long>(rd.snake_frames), rd.width,
+           rd.height, au.running ? "true" : "false",
            static_cast<unsigned long long>(au.frames), static_cast<unsigned long long>(au.underruns));
   // Write then rename so readers never see a half-written file.
   const auto tmp = g_dir / L"MetalGearSkate.state.json.tmp";
