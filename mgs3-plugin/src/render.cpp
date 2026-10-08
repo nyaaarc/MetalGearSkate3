@@ -56,7 +56,9 @@ struct Settings {
   float far_mm = 300000.f;
   float aspect = 0.f;        // width / height; 0 = from the back buffer
   bool flip_z = false;       // false: right-handed view (looks down -z); true: left-handed (mirror image)
-  bool depth_game = true;    // test against the scene's depth buffer (copied at Present), else only our own
+  bool depth_game = true;    // hide behind the scene's depth buffer (copied at Present), else draw over it
+  float depth_bias = 0.002f; // relative: the scene must be this much nearer to hide the board
+  bool depth_debug = false;  // log the scene's depth under the deck and the deck's own, once a second
   bool debug = false;        // marker + axes at Snake's position, skating or not
   // skate: while skating, the whole frame is drawn from the Skate 3 engine's chase camera (the
   //        game's camera constants are rewritten), otherwise as `game`;
@@ -75,12 +77,13 @@ Settings settings() {
 }
 
 std::string describe(const Settings& s) {
-  char text[256];
+  char text[320];
   snprintf(text, sizeof(text),
-           "camera=%s skate_fov_deg=%.1f fov_deg=%.2f near_mm=%.1f far_mm=%.0f aspect=%.4f flip_z=%d depth_game=%d debug=%d",
+           "camera=%s skate_fov_deg=%.1f fov_deg=%.2f near_mm=%.1f far_mm=%.0f aspect=%.4f flip_z=%d depth_game=%d "
+           "depth_bias=%.4f depth_debug=%d debug=%d",
            s.camera == Settings::Camera::Skate ? "skate" : s.camera == Settings::Camera::Game ? "game" : "object",
            s.skate_fov_deg, s.fov_deg, s.near_mm, s.far_mm, s.aspect, s.flip_z ? 1 : 0,
-           s.depth_game ? 1 : 0, s.debug ? 1 : 0);
+           s.depth_game ? 1 : 0, s.depth_bias, s.depth_debug ? 1 : 0, s.debug ? 1 : 0);
   return text;
 }
 
@@ -108,6 +111,8 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
   else if (key == "aspect") ok = parse_float(value, n.aspect) && n.aspect >= 0.f && n.aspect < 10.f;
   else if (key == "flip_z") ok = parse_bool(value, n.flip_z);
   else if (key == "depth_game") ok = parse_bool(value, n.depth_game);
+  else if (key == "depth_bias") ok = parse_float(value, n.depth_bias) && n.depth_bias > -0.5f && n.depth_bias < 0.5f;
+  else if (key == "depth_debug") ok = parse_bool(value, n.depth_debug);
   else if (key == "debug") ok = parse_bool(value, n.debug);
   else if (key == "camera") {
     ok = true;
@@ -117,7 +122,7 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
     else ok = false;
   }
   else if (key == "skate_fov_deg") ok = parse_float(value, n.skate_fov_deg) && n.skate_fov_deg >= 0.f && n.skate_fov_deg < 170.f;
-  else return "unknown key (camera skate_fov_deg fov_deg near_mm far_mm aspect flip_z depth_game debug)";
+  else return "unknown key (camera skate_fov_deg fov_deg near_mm far_mm aspect flip_z depth_game depth_bias depth_debug debug)";
   if (!ok) return "bad value for " + key;
   s = n;
   return "";
@@ -125,7 +130,8 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
 
 void load_settings(const std::filesystem::path& ini) {
   Settings s;
-  for (const char* key : {"camera", "skate_fov_deg", "fov_deg", "near_mm", "far_mm", "aspect", "flip_z", "depth_game", "debug"}) {
+  for (const char* key : {"camera", "skate_fov_deg", "fov_deg", "near_mm", "far_mm", "aspect", "flip_z", "depth_game",
+                          "depth_bias", "depth_debug", "debug"}) {
     char value[64] = {};
     GetPrivateProfileStringA("render", key, "", value, sizeof(value), ini.string().c_str());
     if (!*value) continue;
@@ -322,7 +328,13 @@ cbuffer Draw : register(b0) {
   float4x4 mvp;
   float4x4 world;
   float4 color;
+  // Scene depth test: xy scene pixels per target pixel, z relative bias, w mode (0 off,
+  // 1 single-sampled scene depth in t0, 2 multisampled in t1).
+  float4 depth_params;
+  float4 depth_extra;  // x: scene sample count, yz: probe pixel (scene pixels)
 };
+Texture2D<float> scene_depth : register(t0);
+Texture2DMS<float> scene_depth_ms : register(t1);
 struct VsIn { float3 pos : POSITION; float3 normal : NORMAL; float2 uv : TEXCOORD0; };
 struct VsOut { float4 pos : SV_Position; float3 normal : NORMAL; };
 VsOut vs_main(VsIn v) {
@@ -331,14 +343,34 @@ VsOut vs_main(VsIn v) {
   o.normal = mul((float3x3)world, v.normal);
   return o;
 }
+// The scene's depth at a pixel. MGS3's depth is reversed (k / distance, nearer = larger); of a
+// multisampled pixel's samples take the farthest, so the board only hides where all are nearer.
+float scene_at(int2 p) {
+  float d = 1;
+  if (depth_params.w > 1.5) {
+    uint n = (uint)depth_extra.x;
+    for (uint i = 0; i < n && i < 16; ++i) d = min(d, scene_depth_ms.Load(p, i));
+  } else {
+    d = scene_depth.Load(int3(p, 0));
+  }
+  return d;
+}
 float4 ps_main(VsOut v) : SV_Target {
+  if (depth_params.w > 0.5 && scene_at(int2(v.pos.xy * depth_params.xy)) > v.pos.z * (1 + depth_params.z)) discard;
   float3 l = normalize(float3(0.3, 1.0, 0.2));
   float shade = 0.45 + 0.55 * saturate(dot(normalize(v.normal), l));
   return float4(color.rgb * shade, 1);
 }
+// `render depth_debug`: one triangle over a 1x1 target that reads the scene depth at a pixel.
+float4 vs_probe(uint id : SV_VertexID) : SV_Position {
+  return float4(id == 1 ? 3 : -1, id == 2 ? 3 : -1, 0, 1);
+}
+float4 ps_probe() : SV_Target {
+  return float4(scene_at(int2(depth_extra.yz)), 0, 0, 1);
+}
 )";
 
-ComPtr<ID3DBlob> g_vs_blob, g_ps_blob;
+ComPtr<ID3DBlob> g_vs_blob, g_ps_blob, g_vs_probe_blob, g_ps_probe_blob;
 
 bool compile_shaders() {
   const HMODULE compiler = LoadLibraryW(L"d3dcompiler_47.dll");
@@ -348,8 +380,11 @@ bool compile_shaders() {
     return false;
   }
   ComPtr<ID3DBlob> errors;
-  const std::tuple<const char*, const char*, ComPtr<ID3DBlob>*> stages[] = {{"vs_main", "vs_5_0", &g_vs_blob},
-                                                                            {"ps_main", "ps_5_0", &g_ps_blob}};
+  const std::tuple<const char*, const char*, ComPtr<ID3DBlob>*> stages[] = {
+      {"vs_main", "vs_5_0", &g_vs_blob},
+      {"ps_main", "ps_5_0", &g_ps_blob},
+      {"vs_probe", "vs_5_0", &g_vs_probe_blob},
+      {"ps_probe", "ps_5_0", &g_ps_probe_blob}};
   for (const auto& [entry, target, out] : stages) {
     if (FAILED(compile(kShader, sizeof(kShader) - 1, "mgsk_board", nullptr, nullptr, entry, target, 0, 0,
                        out->ReleaseAndGetAddressOf(), errors.ReleaseAndGetAddressOf()))) {
@@ -366,6 +401,8 @@ struct DrawConstants {
   float mvp[16];
   float world[16];
   float color[4];
+  float depth_params[4];  // see the shader's cbuffer
+  float depth_extra[4];
 };
 
 struct Gpu {
@@ -381,20 +418,44 @@ struct Gpu {
   ComPtr<ID3D11Texture2D> depth;
   ComPtr<ID3D11DepthStencilView> dsv;
   UINT depth_w = 0, depth_h = 0, depth_samples = 0, depth_quality = 0;
-  // Copy of the scene's depth buffer (same description), which the board tests and writes.
+  // Copy of the scene's depth buffer (its typeless format, same size and samples), which the
+  // board's pixel shader reads to hide behind the scene.
   ComPtr<ID3D11Texture2D> scene_copy;
-  ComPtr<ID3D11DepthStencilView> scene_copy_dsv;
+  ComPtr<ID3D11ShaderResourceView> scene_copy_srv;
   D3D11_TEXTURE2D_DESC scene_copy_desc{};
-  D3D11_DEPTH_STENCIL_VIEW_DESC scene_copy_view{};
+  // `render depth_debug`: reads one scene depth value back.
+  ComPtr<ID3D11VertexShader> vs_probe;
+  ComPtr<ID3D11PixelShader> ps_probe;
+  ComPtr<ID3D11Texture2D> probe, probe_staging;
+  ComPtr<ID3D11RenderTargetView> probe_rtv;
 };
 Gpu g_gpu;
 
 bool create_gpu(ID3D11Device* d) {
   Gpu& g = g_gpu;
   if (FAILED(d->CreateVertexShader(g_vs_blob->GetBufferPointer(), g_vs_blob->GetBufferSize(), nullptr, &g.vs)) ||
-      FAILED(d->CreatePixelShader(g_ps_blob->GetBufferPointer(), g_ps_blob->GetBufferSize(), nullptr, &g.ps))) {
+      FAILED(d->CreatePixelShader(g_ps_blob->GetBufferPointer(), g_ps_blob->GetBufferSize(), nullptr, &g.ps)) ||
+      FAILED(d->CreateVertexShader(g_vs_probe_blob->GetBufferPointer(), g_vs_probe_blob->GetBufferSize(), nullptr,
+                                   &g.vs_probe)) ||
+      FAILED(d->CreatePixelShader(g_ps_probe_blob->GetBufferPointer(), g_ps_probe_blob->GetBufferSize(), nullptr,
+                                  &g.ps_probe))) {
     return false;
   }
+  D3D11_TEXTURE2D_DESC pd{};
+  pd.Width = pd.Height = 1;
+  pd.MipLevels = pd.ArraySize = 1;
+  pd.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+  pd.SampleDesc.Count = 1;
+  pd.Usage = D3D11_USAGE_DEFAULT;
+  pd.BindFlags = D3D11_BIND_RENDER_TARGET;
+  if (FAILED(d->CreateTexture2D(&pd, nullptr, &g.probe)) ||
+      FAILED(d->CreateRenderTargetView(g.probe.Get(), nullptr, &g.probe_rtv))) {
+    return false;
+  }
+  pd.Usage = D3D11_USAGE_STAGING;
+  pd.BindFlags = 0;
+  pd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  if (FAILED(d->CreateTexture2D(&pd, nullptr, &g.probe_staging))) return false;
   const D3D11_INPUT_ELEMENT_DESC elements[] = {
       {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
       {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
@@ -495,6 +556,7 @@ struct SavedState {
   ComPtr<ID3D11HullShader> hs;
   ComPtr<ID3D11DomainShader> ds;
   ComPtr<ID3D11Buffer> vs_cb, ps_cb;
+  ComPtr<ID3D11ShaderResourceView> ps_srvs[2];
   ComPtr<ID3D11RasterizerState> rs;
   UINT viewport_count = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
   D3D11_VIEWPORT viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE]{};
@@ -519,6 +581,9 @@ void save(ID3D11DeviceContext* c, SavedState& s) {
   c->DSGetShader(&s.ds, nullptr, nullptr);
   c->VSGetConstantBuffers(0, 1, &s.vs_cb);
   c->PSGetConstantBuffers(0, 1, &s.ps_cb);
+  ID3D11ShaderResourceView* srvs[2] = {};
+  c->PSGetShaderResources(0, 2, srvs);
+  for (int i = 0; i < 2; ++i) s.ps_srvs[i].Attach(srvs[i]);
   c->RSGetState(&s.rs);
   c->RSGetViewports(&s.viewport_count, s.viewports);
   c->OMGetBlendState(&s.blend, s.blend_factor, &s.sample_mask);
@@ -541,6 +606,8 @@ void restore(ID3D11DeviceContext* c, SavedState& s) {
   ID3D11Buffer* ps_cb = s.ps_cb.Get();
   c->VSSetConstantBuffers(0, 1, &vs_cb);
   c->PSSetConstantBuffers(0, 1, &ps_cb);
+  ID3D11ShaderResourceView* srvs[2] = {s.ps_srvs[0].Get(), s.ps_srvs[1].Get()};
+  c->PSSetShaderResources(0, 2, srvs);
   c->DSSetShader(s.ds.Get(), nullptr, 0);
   c->HSSetShader(s.hs.Get(), nullptr, 0);
   c->GSSetShader(s.gs.Get(), nullptr, 0);
@@ -586,14 +653,21 @@ struct Pending {
 };
 Pending g_pending_maps[8] = {};  // guarded
 
-// The scene's depth buffer: the depth-stencil view bound most often while main-camera draws
-// fill $Globals. Nothing is bound at Present, so it is found during the frame. Guarded.
+// The scene's depth buffer, found during the frame (nothing is bound at Present) among the
+// depth-stencil views bound while main-camera draws fill $Globals: the one Snake's skinned draws
+// use, else the one with the most samples (the main pass is 4x MSAA; a 1x one also shows up on
+// some frames), else the most used. A new pick replaces the current one only after holding for
+// kDepthSwitchFrames frames running, so the frame-to-frame alternation doesn't flip the test.
+// Guarded by g_cap_mutex.
 struct DepthCount {
   ComPtr<ID3D11DepthStencilView> view;
-  uint32_t count = 0;
+  uint32_t count = 0, snake = 0, samples = 0;
 };
 DepthCount g_depth_frame[4];  // this frame's candidates
-ComPtr<ID3D11DepthStencilView> g_scene_depth;  // last complete frame's pick
+ComPtr<ID3D11DepthStencilView> g_scene_depth;  // the current pick
+ComPtr<ID3D11DepthStencilView> g_depth_next;   // a different pick, and for how many frames running
+int g_depth_next_frames = 0;
+constexpr int kDepthSwitchFrames = 30;
 
 SafetyHookInline g_map_hook, g_unmap_hook, g_update_hook;
 
@@ -683,8 +757,9 @@ bool main_camera_draw(const uint8_t* globals, Mat& pers, Vec& d) {
   return solve3(rows, {pers.at(0, 3), pers.at(1, 3), pers.at(3, 3)}, d);
 }
 
-// Counts the depth-stencil view bound for a main-camera draw. Caller holds g_cap_mutex.
-void note_depth(ID3D11DeviceContext* c, const uint8_t* globals) {
+// Counts the depth-stencil view bound for a main-camera draw (`snake`: one of Snake's). Caller
+// holds g_cap_mutex.
+void note_depth(ID3D11DeviceContext* c, const uint8_t* globals, bool snake) {
   Mat pers;
   Vec d;
   if (!main_camera_draw(globals, pers, d)) return;
@@ -694,15 +769,54 @@ void note_depth(ID3D11DeviceContext* c, const uint8_t* globals) {
   for (DepthCount& e : g_depth_frame) {
     if (e.view == view) {
       ++e.count;
+      e.snake += snake ? 1 : 0;
       return;
     }
   }
   for (DepthCount& e : g_depth_frame) {
     if (!e.view) {
-      e.view = view;
-      e.count = 1;
+      ComPtr<ID3D11Resource> res;
+      ComPtr<ID3D11Texture2D> tex;
+      view->GetResource(&res);
+      D3D11_TEXTURE2D_DESC td{};
+      if (res && SUCCEEDED(res.As(&tex))) tex->GetDesc(&td);
+      e = {view, 1, snake ? 1u : 0u, td.SampleDesc.Count};
       return;
     }
+  }
+}
+
+// At the end of a frame: picks its scene depth and applies the switching rule above. Caller
+// holds g_cap_mutex.
+void pick_scene_depth() {
+  DepthCount* best = nullptr;
+  auto better = [](const DepthCount& a, const DepthCount& b) {
+    if ((a.snake > 0) != (b.snake > 0)) return a.snake > 0;
+    if (a.samples != b.samples) return a.samples > b.samples;
+    return a.count > b.count;
+  };
+  for (DepthCount& e : g_depth_frame) {
+    if (e.view && (!best || better(e, *best))) best = &e;
+  }
+  ComPtr<ID3D11DepthStencilView> pick = best ? best->view : nullptr;
+  for (DepthCount& e : g_depth_frame) e = {};
+  if (!pick || pick == g_scene_depth) {  // no main-camera draws (menus, loads): keep the current
+    g_depth_next.Reset();
+    g_depth_next_frames = 0;
+    return;
+  }
+  if (!g_scene_depth) {
+    g_scene_depth = pick;
+    return;
+  }
+  if (pick != g_depth_next) {
+    g_depth_next = pick;
+    g_depth_next_frames = 0;
+  }
+  if (++g_depth_next_frames >= kDepthSwitchFrames) {
+    g_scene_depth = g_depth_next;
+    g_depth_next.Reset();
+    g_depth_next_frames = 0;
   }
 }
 
@@ -925,18 +1039,19 @@ int match_bone(const float* slot, const float* bones, Vec origin) {
   return -1;
 }
 
-// Rewrites Snake's palette in a $Globals image with the published pose. Caller holds g_cap_mutex.
-void pose_snake(uint8_t* globals) {
-  if (!g_rest_loaded || g_skin.state < 0 || !g_L_known) return;
+// Rewrites Snake's palette in a $Globals image with the published pose; true if this draw was
+// one of Snake's. Caller holds g_cap_mutex.
+bool pose_snake(uint8_t* globals) {
+  if (!g_rest_loaded || g_skin.state < 0 || !g_L_known) return false;
   Mat pers;
   Vec d;
-  if (!main_camera_draw(globals, pers, d) || dot(d, d) < 1.f) return;  // skinned draws only
+  if (!main_camera_draw(globals, pers, d) || dot(d, d) < 1.f) return false;  // skinned draws only
   if (g_skin.state == 0) {
     float origin[3], object[16];
     bool relative = false;
     g_skin.state = pose::current(g_skin.ours) && pose::game_bones(g_skin.game, origin, object, relative) ? 1 : -1;
     g_skin.origin = {object[12], object[13], object[14]};
-    if (g_skin.state < 0) return;
+    if (g_skin.state < 0) return false;
   }
   // No check of the draw's own origin: some of Snake's draws (about 22 a frame, ~640 mm above his
   // object) sit on another origin yet use palettes relative to his object's, and only his slots
@@ -967,7 +1082,9 @@ void pose_snake(uint8_t* globals) {
     }
     ++g_skin.posed;
   }
-  if (g_skin.posed != posed_before) ++g_skin.draws;
+  if (g_skin.posed == posed_before) return false;
+  ++g_skin.draws;
+  return true;
 }
 
 void end_skin_frame() {
@@ -1001,9 +1118,8 @@ void STDMETHODCALLTYPE on_unmap(ID3D11DeviceContext* c, ID3D11Resource* res, UIN
       if (p.res == res) {
         tally(p.data);  // the game has written the whole buffer by now
         note_look_at(p.data);
-        note_depth(c, p.data);
         if (g_dump_state == 2) dump_draw(p.data);
-        pose_snake(p.data);
+        note_depth(c, p.data, pose_snake(p.data));
         if (g_ovr_active) rewrite(p.data);
         p = {};
         break;
@@ -1051,12 +1167,7 @@ void end_capture_frame() {
   g_cap_last_updates = g_cap_updates;
   g_cap_last_partial = g_cap_partial;
   g_cap_writes = g_cap_maps = g_cap_updates = g_cap_partial = 0;
-  DepthCount* best = nullptr;
-  for (DepthCount& e : g_depth_frame) {
-    if (e.view && (!best || e.count > best->count)) best = &e;
-  }
-  g_scene_depth = best ? best->view : nullptr;
-  for (DepthCount& e : g_depth_frame) e = {};
+  pick_scene_depth();
   if (g_L_known) {
     g_L_prev2 = g_L_prev;
     g_L_prev = g_L_frame;
@@ -1174,6 +1285,14 @@ const float* part_color(int body) {
   return kWheel;
 }
 
+// This frame's scene depth test for the board's pixel shader (render thread only): mode 0 off,
+// 1 single-sampled, 2 multisampled; see the shader's cbuffer.
+struct DepthTest {
+  float params[4] = {1.f, 1.f, 0.f, 0.f};  // scene pixels per target pixel (x, y), bias, mode
+  float extra[4] = {};                      // sample count, probe pixel
+};
+DepthTest g_depth_test;
+
 void draw(ID3D11DeviceContext* c, const Mat& vp, const Mat& world, const float rgb255[3], const Range& r) {
   D3D11_MAPPED_SUBRESOURCE mapped;
   if (FAILED(c->Map(g_gpu.cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return;
@@ -1182,6 +1301,8 @@ void draw(ID3D11DeviceContext* c, const Mat& vp, const Mat& world, const float r
   memcpy(k.world, world.m, sizeof(k.world));
   for (int i = 0; i < 3; ++i) k.color[i] = rgb255[i] / 255.f;
   k.color[3] = 1.f;
+  memcpy(k.depth_params, g_depth_test.params, sizeof(k.depth_params));
+  memcpy(k.depth_extra, g_depth_test.extra, sizeof(k.depth_extra));
   memcpy(mapped.pData, &k, sizeof(k));
   c->Unmap(g_gpu.cb.Get(), 0);
   c->DrawIndexed(r.index_count, r.start_index, r.base_vertex);
@@ -1191,14 +1312,38 @@ std::atomic<bool> g_hooked{false};
 std::atomic<uint64_t> g_presents{0}, g_drawn{0};
 std::atomic<uint32_t> g_width{0}, g_height{0};
 bool g_was_drawing = false;  // render thread only
-int g_game_depth_seen = -1;  // last logged game-depth outcome
 
-// Copies the scene's depth buffer (`scene`, found during the frame) into a buffer of the same
-// description and returns a writable view of the copy, or nullptr (with `outcome` saying why:
-// 0 none found, 1 unusable for this back buffer, 2 copied). The board then hides behind the
-// scene and its parts still sort among themselves, without touching the game's own buffer.
-ID3D11DepthStencilView* scene_depth_copy(ID3D11Device* d, ID3D11DeviceContext* c, ID3D11DepthStencilView* scene,
-                                         const D3D11_TEXTURE2D_DESC& bb, D3D11_TEXTURE2D_DESC& td, int& outcome) {
+// The typeless format of a depth buffer's family (for a copy that can also be read) and the
+// format to read its depth through, or false for a format we don't read.
+bool depth_formats(DXGI_FORMAT f, DXGI_FORMAT& typeless, DXGI_FORMAT& read) {
+  switch (f) {
+    case DXGI_FORMAT_R24G8_TYPELESS:
+    case DXGI_FORMAT_D24_UNORM_S8_UINT:
+      typeless = DXGI_FORMAT_R24G8_TYPELESS, read = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+      return true;
+    case DXGI_FORMAT_R32_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT:
+      typeless = DXGI_FORMAT_R32_TYPELESS, read = DXGI_FORMAT_R32_FLOAT;
+      return true;
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+      typeless = DXGI_FORMAT_R32G8X24_TYPELESS, read = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+      return true;
+    case DXGI_FORMAT_R16_TYPELESS:
+    case DXGI_FORMAT_D16_UNORM:
+      typeless = DXGI_FORMAT_R16_TYPELESS, read = DXGI_FORMAT_R16_UNORM;
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Copies the scene's depth buffer (`scene`, found during the frame) into a texture of the same
+// size, samples and format family that the board's pixel shader can read, and returns a view of
+// it, or nullptr with `outcome` saying why (0 none found, 1 unusable, 2 copied). The game's own
+// buffer is only read (not bound at Present).
+ID3D11ShaderResourceView* scene_depth_copy(ID3D11Device* d, ID3D11DeviceContext* c, ID3D11DepthStencilView* scene,
+                                           D3D11_TEXTURE2D_DESC& td, int& outcome) {
   outcome = 0;
   td = {};
   if (!scene) return nullptr;
@@ -1212,41 +1357,58 @@ ID3D11DepthStencilView* scene_depth_copy(ID3D11Device* d, ID3D11DeviceContext* c
   scene->GetDesc(&vd);
   const bool plain = (vd.ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2D && vd.Texture2D.MipSlice == 0) ||
                      vd.ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2DMS;
-  if (!plain || td.ArraySize != 1 || td.Width != bb.Width || td.Height != bb.Height ||
-      td.SampleDesc.Count != bb.SampleDesc.Count || td.SampleDesc.Quality != bb.SampleDesc.Quality) {
-    return nullptr;
-  }
+  DXGI_FORMAT typeless{}, read{};
+  if (!plain || td.ArraySize != 1 || !depth_formats(td.Format, typeless, read)) return nullptr;
   Gpu& g = g_gpu;
   D3D11_TEXTURE2D_DESC want = td;
+  want.Format = typeless;
   want.Usage = D3D11_USAGE_DEFAULT;
-  want.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+  want.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
   want.CPUAccessFlags = 0;
   want.MiscFlags = 0;
-  vd.Flags = 0;
-  if (!g.scene_copy || memcmp(&want, &g.scene_copy_desc, sizeof(want)) != 0 ||
-      memcmp(&vd, &g.scene_copy_view, sizeof(vd)) != 0) {
-    g.scene_copy_dsv.Reset();
+  if (!g.scene_copy || memcmp(&want, &g.scene_copy_desc, sizeof(want)) != 0) {
+    g.scene_copy_srv.Reset();
     g.scene_copy.Reset();
     g.scene_copy_desc = {};
+    D3D11_SHADER_RESOURCE_VIEW_DESC sd{};
+    sd.Format = read;
+    if (td.SampleDesc.Count > 1) {
+      sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DMS;
+    } else {
+      sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+      sd.Texture2D.MipLevels = 1;
+    }
     if (FAILED(d->CreateTexture2D(&want, nullptr, &g.scene_copy)) ||
-        FAILED(d->CreateDepthStencilView(g.scene_copy.Get(), &vd, &g.scene_copy_dsv))) {
-      g.scene_copy_dsv.Reset();
+        FAILED(d->CreateShaderResourceView(g.scene_copy.Get(), &sd, &g.scene_copy_srv))) {
+      g.scene_copy_srv.Reset();
       g.scene_copy.Reset();
       return nullptr;
     }
     g.scene_copy_desc = want;
-    g.scene_copy_view = vd;
   }
   c->CopyResource(g.scene_copy.Get(), tex.Get());
   outcome = 2;
-  return g.scene_copy_dsv.Get();
+  return g.scene_copy_srv.Get();
 }
 
-// Picks the depth buffer: a copy of the scene's when asked and usable, else ours (cleared).
-// Logs whenever the outcome changes.
+// The game-depth outcome last logged, and when (log lines are rate-limited).
+struct DepthLog {
+  int outcome = -1;
+  UINT width = 0, height = 0, samples = 0;
+  DXGI_FORMAT format{};
+  ULONGLONG at = 0;
+  int suppressed = 0;
+} g_depth_log;
+
+// Sets up the board's depth for this frame: our own buffer (cleared) for its parts to sort
+// among themselves, and, when asked and usable, the scene's depth for the pixel shader to hide
+// behind (only with the game's reversed depth, which the board's projection shares: k / w,
+// k ~ 50, the same as gVS_Pers). Returns our depth view; binds the scene depth as t0 or t1.
 ID3D11DepthStencilView* pick_depth(ID3D11Device* d, ID3D11DeviceContext* c, const D3D11_TEXTURE2D_DESC& bb,
-                                   bool want_game, bool reversed) {
-  if (want_game) {
+                                   const Settings& s, bool reversed) {
+  g_depth_test = {};
+  ID3D11ShaderResourceView* srvs[2] = {};
+  if (s.depth_game && reversed) {
     ComPtr<ID3D11DepthStencilView> scene;
     {
       std::lock_guard lock(g_cap_mutex);
@@ -1254,25 +1416,75 @@ ID3D11DepthStencilView* pick_depth(ID3D11Device* d, ID3D11DeviceContext* c, cons
     }
     D3D11_TEXTURE2D_DESC td{};
     int outcome = 0;
-    ID3D11DepthStencilView* copy = scene_depth_copy(d, c, scene.Get(), bb, td, outcome);
-    if (outcome != g_game_depth_seen) {
-      g_game_depth_seen = outcome;
-      if (outcome == 0) {
-        log("render: depth_game: no scene depth buffer seen this frame; using our own");
+    ID3D11ShaderResourceView* srv = scene_depth_copy(d, c, scene.Get(), td, outcome);
+    if (srv) {
+      const bool ms = td.SampleDesc.Count > 1;
+      g_depth_test.params[0] = static_cast<float>(td.Width) / static_cast<float>(bb.Width);
+      g_depth_test.params[1] = static_cast<float>(td.Height) / static_cast<float>(bb.Height);
+      g_depth_test.params[2] = s.depth_bias;
+      g_depth_test.params[3] = ms ? 2.f : 1.f;
+      g_depth_test.extra[0] = static_cast<float>(td.SampleDesc.Count);
+      srvs[ms ? 1 : 0] = srv;
+    }
+    DepthLog& l = g_depth_log;
+    const bool changed = outcome != l.outcome || td.Width != l.width || td.Height != l.height ||
+                         td.SampleDesc.Count != l.samples || td.Format != l.format;
+    if (changed) {
+      const ULONGLONG now = GetTickCount64();
+      if (now - l.at >= 2000) {
+        if (outcome == 0) {
+          log("render: depth_game: no scene depth buffer seen yet; the board draws over everything");
+        } else {
+          log("render: depth_game: scene depth %ux%u format %d x%u (back buffer %ux%u): %s%s", td.Width, td.Height,
+              static_cast<int>(td.Format), td.SampleDesc.Count, bb.Width, bb.Height,
+              outcome == 2 ? "read by the board's shader, the board hides behind the scene"
+                           : "unusable, the board draws over everything",
+              l.suppressed ? " (other changes since the last line not logged)" : "");
+        }
+        l = {outcome, td.Width, td.Height, td.SampleDesc.Count, td.Format, now, 0};
       } else {
-        log("render: depth_game: scene depth %ux%u format %d x%u (back buffer %ux%u x%u): %s", td.Width, td.Height,
-            static_cast<int>(td.Format), td.SampleDesc.Count, bb.Width, bb.Height, bb.SampleDesc.Count,
-            outcome == 2 ? "copied, the board hides behind the scene" : "unusable, using our own");
+        ++l.suppressed;
       }
     }
-    if (copy) return copy;
   } else {
-    g_game_depth_seen = -1;
+    g_depth_log.outcome = -1;
   }
+  c->PSSetShaderResources(0, 2, srvs);
   ID3D11DepthStencilView* own = own_depth(d, bb);
   if (own) c->ClearDepthStencilView(own, D3D11_CLEAR_DEPTH, reversed ? 0.f : 1.f, 0);
   return own;
 }
+
+// `render depth_debug`: the scene's depth at a scene pixel, read back (stalls; once a second).
+bool probe_scene_depth(ID3D11DeviceContext* c, float px, float py, float& out) {
+  Gpu& g = g_gpu;
+  if (g_depth_test.params[3] < 0.5f) return false;
+  D3D11_MAPPED_SUBRESOURCE mapped;
+  if (FAILED(c->Map(g.cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return false;
+  DrawConstants k{};
+  memcpy(k.depth_params, g_depth_test.params, sizeof(k.depth_params));
+  memcpy(k.depth_extra, g_depth_test.extra, sizeof(k.depth_extra));
+  k.depth_extra[1] = px;
+  k.depth_extra[2] = py;
+  memcpy(mapped.pData, &k, sizeof(k));
+  c->Unmap(g.cb.Get(), 0);
+  ID3D11RenderTargetView* rtv = g.probe_rtv.Get();
+  c->OMSetRenderTargetsAndUnorderedAccessViews(1, &rtv, nullptr, 0, D3D11_KEEP_UNORDERED_ACCESS_VIEWS, nullptr, nullptr);
+  const D3D11_VIEWPORT one{0.f, 0.f, 1.f, 1.f, 0.f, 1.f};
+  c->RSSetViewports(1, &one);
+  c->OMSetDepthStencilState(nullptr, 0);
+  c->IASetInputLayout(nullptr);
+  c->VSSetShader(g.vs_probe.Get(), nullptr, 0);
+  c->PSSetShader(g.ps_probe.Get(), nullptr, 0);
+  c->Draw(3, 0);
+  c->CopyResource(g.probe_staging.Get(), g.probe.Get());
+  if (FAILED(c->Map(g.probe_staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return false;
+  memcpy(&out, mapped.pData, sizeof(out));
+  c->Unmap(g.probe_staging.Get(), 0);
+  return true;
+}
+
+ULONGLONG g_depth_debug_at = 0;
 
 void frame(IDXGISwapChain* swap) {
   g_presents.fetch_add(1, std::memory_order_relaxed);
@@ -1334,7 +1546,7 @@ void frame(IDXGISwapChain* swap) {
   // The game's projection gives depth = k / distance (nearer = larger), so compare the other way.
   const bool reversed = have_skate_camera || (have_game_camera && game_pers.at(2, 3) > 0.f);
 
-  ID3D11DepthStencilView* dsv = pick_depth(device.Get(), c.Get(), bb, s.depth_game, reversed);
+  ID3D11DepthStencilView* dsv = pick_depth(device.Get(), c.Get(), bb, s, reversed);
 
   ID3D11RenderTargetView* target_rtv = rtv.Get();
   c->OMSetRenderTargetsAndUnorderedAccessViews(1, &target_rtv, dsv, 0, D3D11_KEEP_UNORDERED_ACCESS_VIEWS, nullptr, nullptr);
@@ -1378,6 +1590,29 @@ void frame(IDXGISwapChain* swap) {
     draw(c.Get(), vp, place({snake.x + 500.f, snake.y, snake.z}, {1000.f, 40.f, 40.f}), kRed, g_cube);
     draw(c.Get(), vp, place({snake.x, snake.y + 500.f, snake.z}, {40.f, 1000.f, 40.f}), kGreen, g_cube);
     draw(c.Get(), vp, place({snake.x, snake.y, snake.z + 500.f}, {40.f, 40.f, 1000.f}), kBlue, g_cube);
+  }
+  if (s.depth_debug && have_board && GetTickCount64() - g_depth_debug_at >= 1000) {
+    g_depth_debug_at = GetTickCount64();
+    float clip[4];
+    for (int i = 0; i < 4; ++i) clip[i] = vp.at(i, 0) * deck.x + vp.at(i, 1) * deck.y + vp.at(i, 2) * deck.z + vp.at(i, 3);
+    if (clip[3] <= 0.f) {
+      log("render: depth_debug: deck behind the camera");
+    } else {
+      const float x = (clip[0] / clip[3] + 1.f) * 0.5f * static_cast<float>(bb.Width);
+      const float y = (1.f - clip[1] / clip[3]) * 0.5f * static_cast<float>(bb.Height);
+      const float own = clip[2] / clip[3];
+      float scene_d = 0.f;
+      const bool on_screen = x >= 0.f && y >= 0.f && x < static_cast<float>(bb.Width) && y < static_cast<float>(bb.Height);
+      if (on_screen && probe_scene_depth(c.Get(), x * g_depth_test.params[0], y * g_depth_test.params[1], scene_d)) {
+        log("render: depth_debug: deck centre at pixel %.0f %.0f, its depth %.6f (k/w: distance %.0f mm); scene depth "
+            "there %.6f (x%.0f samples, farthest) -> board %s (bias %.4f)",
+            x, y, own, clip[3], scene_d, g_depth_test.extra[0], scene_d > own * (1.f + s.depth_bias) ? "hidden" : "shown",
+            s.depth_bias);
+      } else {
+        log("render: depth_debug: deck centre at pixel %.0f %.0f, its depth %.6f; no scene depth to compare (%s)", x, y,
+            own, on_screen ? "depth_game off or unusable" : "off screen");
+      }
+    }
   }
   restore(c.Get(), saved);
 

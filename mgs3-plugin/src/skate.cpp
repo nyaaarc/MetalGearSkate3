@@ -89,7 +89,7 @@ class Stealth {
   int16_t previous_ = 0;
 };
 
-// -1 none, 0 stop, 1 start: a pending request from the test harness.
+// -1 none, 0 stop, 1 start, 2 start at g_start_at (even while skating): a pending harness request.
 std::atomic<int> g_request{-1};
 // -1 none, 0 off, 1 on: a pending stealth change from the test harness.
 std::atomic<int> g_stealth{-1};
@@ -434,7 +434,10 @@ DWORD WINAPI run(LPVOID) {
       if (!stealth_enabled) stealth.end();
     }
     const int remote = g_request.exchange(-1);
-    const bool toggled = (key_down && !key_was_down) || (remote == 1 && !skating) || (remote == 0 && skating);
+    // A harness start at a given spot while already skating starts over there.
+    if (remote == 2 && skating) skating = false;
+    const bool toggled =
+        (key_down && !key_was_down) || ((remote == 1 || remote == 2) && !skating) || (remote == 0 && skating);
     key_was_down = key_down;
 
     game::Vec3* snake = game::snake_position();
@@ -586,7 +589,7 @@ void request_at(float x_mm, float y_mm, float z_mm, float heading_deg) {
     std::lock_guard lock(g_status_mutex);
     g_start_at = {true, x_mm, y_mm, z_mm, heading_deg};
   }
-  g_request = 1;
+  g_request = 2;
 }
 
 bool camera(float (&out)[kCameraFloats]) {
