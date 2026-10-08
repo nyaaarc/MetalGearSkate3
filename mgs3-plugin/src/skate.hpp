@@ -32,4 +32,10 @@ Status status();
 constexpr int kBoardBodies = 7;
 bool board_pose(float (&out)[kBoardBodies * 16]);
 
+// The engine's chase camera from the latest tick: position (3, mm, game axes), basis (9, columns:
+// up x forward, up, forward), vertical field of view (degrees). False while not skating or when
+// the DLL has no mgsk_camera. Safe from any thread.
+constexpr int kCameraFloats = 13;
+bool camera(float (&out)[kCameraFloats]);
+
 }  // namespace skate

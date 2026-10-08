@@ -14,6 +14,7 @@ use skate_host::bridge::{Controls, Session};
 
 mod board;
 mod geom;
+mod rails;
 mod retarget;
 
 static VERSION: &CStr = c"skate-ffi 0.1.0";
@@ -30,6 +31,13 @@ struct Extra {
 }
 
 static EXTRAS: Mutex<std::collections::BTreeMap<usize, Extra>> = Mutex::new(std::collections::BTreeMap::new());
+
+/// Grind rails installed by the last `mgsk_install_geom`, keyed by session address.
+static RAIL_COUNTS: Mutex<std::collections::BTreeMap<usize, i32>> = Mutex::new(std::collections::BTreeMap::new());
+
+fn rail_counts() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<usize, i32>> {
+    RAIL_COUNTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn extras() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<usize, Extra>> {
     EXTRAS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -116,6 +124,7 @@ pub unsafe extern "C" fn mgsk_session_free(session: *mut Session) {
     if !session.is_null() {
         guard((), || {
             extras().remove(&(session as usize));
+            rail_counts().remove(&(session as usize));
             drop(unsafe { Box::from_raw(session) });
             Ok(())
         });
@@ -172,8 +181,9 @@ fn count_i32(n: usize) -> Result<i32, String> {
 }
 
 /// Replaces the world the skater rides with the solid collision of an MGS3 `.geom` file,
-/// every coordinate (mm, game axes) multiplied by `units_per_mm`. Builds on the calling
-/// thread; takes effect from the next tick. Returns the triangle count, or -1 on failure.
+/// every coordinate (mm, game axes) multiplied by `units_per_mm`, plus grind rails found on its
+/// ledges, kerbs and railings (see `rails.rs`; `mgsk_rail_count` gives how many). Builds on the
+/// calling thread; takes effect from the next tick. Returns the triangle count, or -1 on failure.
 ///
 /// # Safety
 /// `session` is a live session not used concurrently; `geom_path` is a NUL-terminated UTF-8 path.
@@ -189,9 +199,76 @@ pub unsafe extern "C" fn mgsk_install_geom(session: *mut Session, geom_path: *co
             *c *= units_per_mm;
         }
         let count = count_i32(tris.len())?;
-        let prepared = session.collision_builder().build(tris, Vec::new())?;
+        let rails = geom_rails(&tris, units_per_mm);
+        let rail_count = count_i32(rails.len())?;
+        let prepared = session.collision_builder().build(tris, rails)?;
         session.install_collision(prepared)?;
+        rail_counts().insert(std::ptr::from_mut(session) as usize, rail_count);
         Ok(count)
+    })
+}
+
+/// Grind rails over `tris` (game axes, `units_per_mm` engine units per mm). The rail finder
+/// works in metres, so it sees the stage at real scale whatever the engine's units are.
+fn geom_rails(tris: &[geom::Triangle], units_per_mm: f32) -> Vec<Vec<[f32; 3]>> {
+    let to_m = 1. / (1000. * units_per_mm);
+    let metres: Vec<geom::Triangle> = tris.iter().map(|t| t.map(|p| p.map(|c| c * to_m))).collect();
+    let (rails, _) = rails::find(&metres);
+    rails.into_iter().map(|r| r.into_iter().map(|p| p.map(|c| c / to_m)).collect()).collect()
+}
+
+/// Number of grind rails the last `mgsk_install_geom` gave `session` (0 before any), or -1.
+///
+/// # Safety
+/// `session` is a live session.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_rail_count(session: *const Session) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_ref() }.ok_or("null session")?;
+        Ok(rail_counts().get(&(std::ptr::from_ref(session) as usize)).copied().unwrap_or(0))
+    })
+}
+
+/// The grind rails `mgsk_install_geom` would find in an MGS3 `.geom` file, as segments: writes
+/// up to `capacity` segments (6 floats each: start, end; coordinates as `mgsk_install_geom`
+/// with `units_per_mm`) to `out` and returns the total segment count, or -1. If `rail_count`
+/// is not null it receives the number of rails. For tests and debugging.
+///
+/// # Safety
+/// `geom_path` is a NUL-terminated UTF-8 path; `out` has room for `capacity * 6` floats (may be
+/// null when `capacity` is 0); `rail_count` is null or valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_geom_rails(
+    geom_path: *const c_char,
+    units_per_mm: f32,
+    out: *mut f32,
+    capacity: u32,
+    rail_count: *mut i32,
+) -> i32 {
+    guard(-1, || {
+        if !(units_per_mm.is_finite() && units_per_mm > 0.) {
+            return Err(format!("bad units_per_mm {units_per_mm}"));
+        }
+        let mut tris = read_geom(geom_path)?;
+        for c in tris.iter_mut().flatten().flatten() {
+            *c *= units_per_mm;
+        }
+        let rails = geom_rails(&tris, units_per_mm);
+        let segments: Vec<[f32; 6]> = rails
+            .iter()
+            .flat_map(|r| r.windows(2).map(|w| [w[0][0], w[0][1], w[0][2], w[1][0], w[1][1], w[1][2]]))
+            .collect();
+        let n = segments.len().min(capacity as usize);
+        if n > 0 {
+            if out.is_null() {
+                return Err("null out".into());
+            }
+            unsafe { std::ptr::copy_nonoverlapping(segments.as_flattened().as_ptr(), out, n * 6) };
+        }
+        if !rail_count.is_null() {
+            unsafe { *rail_count = count_i32(rails.len())? };
+        }
+        count_i32(segments.len())
     })
 }
 
@@ -284,6 +361,29 @@ pub unsafe extern "C" fn mgsk_root(session: *const Session, out: *mut f32) -> i3
         }
         let m = session.pose().root.to_cols_array();
         unsafe { std::ptr::copy_nonoverlapping(m.as_ptr(), out, 16) };
+        Ok(0)
+    })
+}
+
+/// Writes the engine's chase camera to `out`: position (3, engine units = metres, +Y up), basis
+/// (9, three columns), vertical field of view in degrees (1): 13 floats. Returns 0, or -1 when
+/// the camera has no frame yet (or on error).
+///
+/// # Safety
+/// `session` is a live session; `out` has room for 13 floats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_camera(session: *const Session, out: *mut f32) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_ref() }.ok_or("null session")?;
+        if out.is_null() {
+            return Err("null out".into());
+        }
+        let (position, basis, fov) = session.pose().camera.ok_or("no camera frame yet")?;
+        let mut v = [0f32; 13];
+        v[..3].copy_from_slice(&position.to_array());
+        v[3..12].copy_from_slice(&basis.to_cols_array());
+        v[12] = fov;
+        unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), out, 13) };
         Ok(0)
     })
 }
@@ -478,5 +578,31 @@ pub unsafe extern "C" fn mgsk_snake_pose(session: *const Session, out: *mut f32,
             unsafe { std::ptr::copy_nonoverlapping(snake[..n].as_flattened().as_ptr(), out, n * 16) };
         }
         count_i32(n)
+    })
+}
+
+/// Copies the skater's current state name (the engine's player state, e.g. `Riding`, or a
+/// grind state while grinding; NUL-terminated, truncated to fit) into `out`, which holds
+/// `capacity` bytes. Returns the name's full length in bytes without the NUL, or -1.
+///
+/// # Safety
+/// `session` is a live session; `out` has room for `capacity` bytes (may be null when
+/// `capacity` is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_state(session: *const Session, out: *mut c_char, capacity: u32) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_ref() }.ok_or("null session")?;
+        let state = session.pose().state;
+        if capacity > 0 {
+            if out.is_null() {
+                return Err("null out".into());
+            }
+            let n = state.len().min(capacity as usize - 1);
+            unsafe {
+                std::ptr::copy_nonoverlapping(state.as_ptr().cast::<c_char>(), out, n);
+                *out.add(n) = 0;
+            }
+        }
+        count_i32(state.len())
     })
 }

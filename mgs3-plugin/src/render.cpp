@@ -5,6 +5,7 @@
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -56,6 +57,12 @@ struct Settings {
   bool flip_z = false;       // false: right-handed view (looks down -z); true: left-handed (mirror image)
   bool depth_game = false;   // test against the depth buffer bound at Present, if any (else our own)
   bool debug = false;        // marker + axes at Snake's position, skating or not
+  // skate: while skating, the whole frame is drawn from the Skate 3 engine's chase camera (the
+  //        game's camera constants are rewritten), otherwise as `game`;
+  // game:   the game's own view-projection (captured), untouched;
+  // object: the old guess, camera object + fov_deg/near_mm/far_mm/aspect/flip_z.
+  enum class Camera { Skate, Game, Object } camera = Camera::Skate;
+  float skate_fov_deg = 0.f;  // vertical fov for the skate camera; 0 = the engine's
 };
 
 std::mutex g_settings_mutex;
@@ -68,8 +75,11 @@ Settings settings() {
 
 std::string describe(const Settings& s) {
   char text[256];
-  snprintf(text, sizeof(text), "fov_deg=%.2f near_mm=%.1f far_mm=%.0f aspect=%.4f flip_z=%d depth_game=%d debug=%d",
-           s.fov_deg, s.near_mm, s.far_mm, s.aspect, s.flip_z ? 1 : 0, s.depth_game ? 1 : 0, s.debug ? 1 : 0);
+  snprintf(text, sizeof(text),
+           "camera=%s skate_fov_deg=%.1f fov_deg=%.2f near_mm=%.1f far_mm=%.0f aspect=%.4f flip_z=%d depth_game=%d debug=%d",
+           s.camera == Settings::Camera::Skate ? "skate" : s.camera == Settings::Camera::Game ? "game" : "object",
+           s.skate_fov_deg, s.fov_deg, s.near_mm, s.far_mm, s.aspect, s.flip_z ? 1 : 0,
+           s.depth_game ? 1 : 0, s.debug ? 1 : 0);
   return text;
 }
 
@@ -98,7 +108,15 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
   else if (key == "flip_z") ok = parse_bool(value, n.flip_z);
   else if (key == "depth_game") ok = parse_bool(value, n.depth_game);
   else if (key == "debug") ok = parse_bool(value, n.debug);
-  else return "unknown key (fov_deg near_mm far_mm aspect flip_z depth_game debug)";
+  else if (key == "camera") {
+    ok = true;
+    if (value == "skate") n.camera = Settings::Camera::Skate;
+    else if (value == "game") n.camera = Settings::Camera::Game;
+    else if (value == "object") n.camera = Settings::Camera::Object;
+    else ok = false;
+  }
+  else if (key == "skate_fov_deg") ok = parse_float(value, n.skate_fov_deg) && n.skate_fov_deg >= 0.f && n.skate_fov_deg < 170.f;
+  else return "unknown key (camera skate_fov_deg fov_deg near_mm far_mm aspect flip_z depth_game debug)";
   if (!ok) return "bad value for " + key;
   s = n;
   return "";
@@ -106,7 +124,7 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
 
 void load_settings(const std::filesystem::path& ini) {
   Settings s;
-  for (const char* key : {"fov_deg", "near_mm", "far_mm", "aspect", "flip_z", "depth_game", "debug"}) {
+  for (const char* key : {"camera", "skate_fov_deg", "fov_deg", "near_mm", "far_mm", "aspect", "flip_z", "depth_game", "debug"}) {
     char value[64] = {};
     GetPrivateProfileStringA("render", key, "", value, sizeof(value), ini.string().c_str());
     if (!*value) continue;
@@ -193,6 +211,15 @@ Mat perspective(float fov_y, float aspect, float near_z, float far_z, bool left_
     r.at(2, 2) = far_z / (near_z - far_z);
     r.at(2, 3) = near_z * far_z / (near_z - far_z);
     r.at(3, 2) = -1.f;
+  }
+  return r;
+}
+
+// A row-major float4x4 as HLSL stores it (`row_major`, rows contiguous, used as mul(M, v)).
+Mat from_rows(const float* f) {
+  Mat r;
+  for (int row = 0; row < 4; ++row) {
+    for (int col = 0; col < 4; ++col) r.at(row, col) = f[row * 4 + col];
   }
   return r;
 }
@@ -348,7 +375,8 @@ struct Gpu {
   ComPtr<ID3D11InputLayout> layout;
   ComPtr<ID3D11Buffer> vb, ib, cb;
   ComPtr<ID3D11RasterizerState> rs;
-  ComPtr<ID3D11DepthStencilState> depth_own, depth_game;
+  ComPtr<ID3D11DepthStencilState> depth_own, depth_game;          // depth grows with distance
+  ComPtr<ID3D11DepthStencilState> depth_own_rev, depth_game_rev;  // depth shrinks with distance (the game's)
   ComPtr<ID3D11Texture2D> depth;
   ComPtr<ID3D11DepthStencilView> dsv;
   UINT depth_w = 0, depth_h = 0, depth_samples = 0, depth_quality = 0;
@@ -399,10 +427,14 @@ bool create_gpu(ID3D11Device* d) {
   dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
   dd.DepthFunc = D3D11_COMPARISON_LESS;
   if (FAILED(d->CreateDepthStencilState(&dd, &g.depth_own))) return false;
+  dd.DepthFunc = D3D11_COMPARISON_GREATER;
+  if (FAILED(d->CreateDepthStencilState(&dd, &g.depth_own_rev))) return false;
   // The game's buffer is bound read-only (it may also be bound as a shader resource).
   dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
   dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
-  return SUCCEEDED(d->CreateDepthStencilState(&dd, &g.depth_game));
+  if (FAILED(d->CreateDepthStencilState(&dd, &g.depth_game))) return false;
+  dd.DepthFunc = D3D11_COMPARISON_GREATER_EQUAL;
+  return SUCCEEDED(d->CreateDepthStencilState(&dd, &g.depth_game_rev));
 }
 
 bool ensure_gpu(ID3D11Device* d) {
@@ -521,6 +553,348 @@ void restore(ID3D11DeviceContext* c, SavedState& s) {
   c->IASetInputLayout(s.layout.Get());
 }
 
+// ---- the game's own camera, from its vertex-shader constants ---------------------------------
+//
+// Every stock 3D vertex shader (dumped from the running game, disassembled with D3DDisassemble)
+// declares the same `$Globals` constant buffer at b0, compiled row_major, and computes
+//   view_pos = mul(gVS_Mat0, pos)   (rigid models; skinned ones use the gVS_Mat[] array instead)
+//   clip     = mul(gVS_Pers, view_pos)
+// gVS_Pers is float4x4 at byte 480, gVS_Mat0 float4x4 at byte 608 (model -> view). So the view
+// projection is gVS_Pers x (the view matrix), and the view matrix is gVS_Mat0 of any model whose
+// world matrix is identity (the stage's own geometry: most draws of a frame share it).
+// The context's Map/Unmap and UpdateSubresource are hooked to read those two matrices from every
+// $Globals-sized constant buffer the game fills, tallied per frame; Present takes the result.
+
+constexpr UINT kPersOffset = 480, kMat0Offset = 608, kGlobalsMin = kMat0Offset + 64;
+
+struct CamSample {
+  float pers[16];
+  float mat0[16];
+  uint64_t hash;
+  uint32_t count;
+};
+
+std::mutex g_cap_mutex;
+std::vector<CamSample> g_cap_frame;    // this frame's distinct (pers, mat0) pairs; guarded
+std::vector<CamSample> g_cap_last;     // last complete frame; guarded
+uint64_t g_cap_writes = 0, g_cap_maps = 0, g_cap_updates = 0, g_cap_partial = 0;  // guarded, per frame
+uint64_t g_cap_last_writes = 0, g_cap_last_maps = 0, g_cap_last_updates = 0, g_cap_last_partial = 0;
+ID3D11DeviceContext* g_cap_context = nullptr;  // the immediate context we hooked
+struct Pending {
+  ID3D11Resource* res;
+  uint8_t* data;
+};
+Pending g_pending_maps[8] = {};  // guarded
+
+SafetyHookInline g_map_hook, g_unmap_hook, g_update_hook;
+
+bool is_globals(ID3D11Resource* res) {
+  D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+  res->GetType(&dim);
+  if (dim != D3D11_RESOURCE_DIMENSION_BUFFER) return false;
+  D3D11_BUFFER_DESC d;
+  static_cast<ID3D11Buffer*>(res)->GetDesc(&d);
+  return (d.BindFlags & D3D11_BIND_CONSTANT_BUFFER) && d.ByteWidth >= kGlobalsMin;
+}
+
+// Records the matrices at `globals` (a $Globals image). Caller holds g_cap_mutex.
+void tally(const uint8_t* globals) {
+  CamSample s;
+  memcpy(s.pers, globals + kPersOffset, sizeof(s.pers));
+  memcpy(s.mat0, globals + kMat0Offset, sizeof(s.mat0));
+  s.hash = 1469598103934665603ull;  // FNV-1a over both matrices
+  for (const float* m : {s.pers, s.mat0}) {
+    const auto* b = reinterpret_cast<const uint8_t*>(m);
+    for (size_t i = 0; i < 64; ++i) s.hash = (s.hash ^ b[i]) * 1099511628211ull;
+  }
+  ++g_cap_writes;
+  for (CamSample& e : g_cap_frame) {
+    if (e.hash == s.hash && memcmp(e.mat0, s.mat0, sizeof(s.mat0)) == 0 && memcmp(e.pers, s.pers, sizeof(s.pers)) == 0) {
+      ++e.count;
+      return;
+    }
+  }
+  if (g_cap_frame.size() < 4096) {
+    s.count = 1;
+    g_cap_frame.push_back(s);
+  }
+}
+
+// ---- drawing the frame from another camera (`render camera skate`) ---------------------------
+//
+// Every main-camera draw's gVS_Pers is `S * T(d)`: S = projection x view rotation (rows 0, 1 and 3
+// carry no constant; row 2 is (~0, ~0, ~0, k), k ~ 50, a little more for depth-biased layers)
+// and d an offset (0 for the stage and rigid models, whose gVS_Mat0 = T(-L) * world with L the
+// frame's look-at point; non-zero for skinned models). So the world position of whatever the
+// draw transforms is T(L + d) * gVS_Mat0 * v (or * the bones), and the same draw seen from
+// another camera VP is gVS_Pers' = VP_k * T(L + d), VP_k being VP with row 2 = (0, 0, 0, k).
+// L is read from this frame's first stage draw (gVS_Mat0 a pure translation, d = 0); draws
+// before it use last frame's L extrapolated. Shadow, light and screen-space passes don't have
+// the shape and are left alone.
+
+bool g_ovr_active = false;  // guarded by g_cap_mutex: rewrite this frame's draws
+Mat g_ovr_vp;               // the new view-projection (row 2 replaced per draw)
+bool g_ovr_used = false;    // what the frame that just ended was drawn with (the board uses it)
+Mat g_ovr_used_vp;
+Vec g_L_frame{}, g_L_prev{}, g_L_prev2{};
+bool g_L_known = false;
+int g_L_history = 0;  // frames in a row with L seen (0, 1, 2+)
+uint64_t g_ovr_replaced = 0, g_ovr_early = 0, g_ovr_last_replaced = 0, g_ovr_last_early = 0;
+
+bool stage_translation(const Mat& m);
+
+bool solve3(const Vec rows[3], Vec b, Vec& x) {
+  const Vec c0 = cross(rows[1], rows[2]);
+  const float det = dot(rows[0], c0);
+  if (std::fabs(det) < 1e-9f) return false;
+  const Vec c1 = cross(rows[2], rows[0]), c2 = cross(rows[0], rows[1]);
+  // inverse(A) has columns c0 c1 c2 over det.
+  x = {(c0.x * b.x + c1.x * b.y + c2.x * b.z) / det, (c0.y * b.x + c1.y * b.y + c2.y * b.z) / det,
+       (c0.z * b.x + c1.z * b.y + c2.z * b.z) / det};
+  return true;
+}
+
+Vec row_of(const Mat& m, int r) { return {m.at(r, 0), m.at(r, 1), m.at(r, 2)}; }
+
+// A main-camera gVS_Pers (perspective, k depth row), not a light/shadow/screen one.
+bool main_camera_pers(const Mat& p) {
+  const Vec r0 = row_of(p, 0), r1 = row_of(p, 1), r2 = row_of(p, 2), r3 = row_of(p, 3);
+  const float l0 = std::sqrt(dot(r0, r0)), l1 = std::sqrt(dot(r1, r1)), l3 = std::sqrt(dot(r3, r3));
+  return std::sqrt(dot(r2, r2)) < 1e-3f && p.at(2, 3) > 1.f && p.at(2, 3) < 1000.f && std::fabs(l3 - 1.f) < 1e-3f &&
+         l0 > 0.1f && l1 > 0.1f && std::fabs(dot(r0, r3)) < 1e-3f * l0 && std::fabs(dot(r1, r3)) < 1e-3f * l1;
+}
+
+// Rewrites gVS_Pers in a $Globals image to draw from g_ovr_vp. Caller holds g_cap_mutex.
+void rewrite(uint8_t* globals) {
+  float f[16];
+  memcpy(f, globals + kPersOffset, sizeof(f));
+  const Mat pers = from_rows(f);
+  if (!main_camera_pers(pers)) return;
+  const Vec rows[3] = {row_of(pers, 0), row_of(pers, 1), row_of(pers, 3)};
+  Vec d;
+  if (!solve3(rows, {pers.at(0, 3), pers.at(1, 3), pers.at(3, 3)}, d)) return;
+  if (!g_L_known && dot(d, d) < 1.f) {
+    memcpy(f, globals + kMat0Offset, sizeof(f));
+    const Mat mat0 = from_rows(f);
+    if (stage_translation(mat0)) {
+      g_L_frame = {-mat0.at(0, 3), -mat0.at(1, 3), -mat0.at(2, 3)};
+      g_L_known = true;
+    }
+  }
+  Vec L;
+  if (g_L_known) {
+    L = g_L_frame;
+  } else if (g_L_history >= 2) {
+    L = {2.f * g_L_prev.x - g_L_prev2.x, 2.f * g_L_prev.y - g_L_prev2.y, 2.f * g_L_prev.z - g_L_prev2.z};
+    ++g_ovr_early;
+  } else if (g_L_history == 1) {
+    L = g_L_prev;
+    ++g_ovr_early;
+  } else {
+    return;  // no look-at point yet: leave the draw as the game made it
+  }
+  Mat vp = g_ovr_vp;
+  vp.at(2, 0) = vp.at(2, 1) = vp.at(2, 2) = 0.f;
+  vp.at(2, 3) = pers.at(2, 3) - dot(row_of(pers, 2), d);
+  const Mat out = mul(vp, place({L.x + d.x, L.y + d.y, L.z + d.z}, {1.f, 1.f, 1.f}));
+  for (int r = 0; r < 4; ++r) {
+    for (int c = 0; c < 4; ++c) f[r * 4 + c] = out.at(r, c);
+  }
+  memcpy(globals + kPersOffset, f, sizeof(f));
+  ++g_ovr_replaced;
+}
+
+// View-projection from the engine camera (13 floats: position mm, basis columns, vertical fov),
+// in the game's convention: depth = k / distance (row 2 = (0, 0, 0, k)), w = distance along
+// forward. The engine's first basis column is up x forward, which is screen left here.
+Mat skate_view_projection(const float cam[13], float aspect, float fov_override_deg, float k) {
+  const Vec C{cam[0], cam[1], cam[2]};
+  const Vec right{-cam[3], -cam[4], -cam[5]}, up{cam[6], cam[7], cam[8]}, fwd{cam[9], cam[10], cam[11]};
+  const float fov = (fov_override_deg > 0.f ? fov_override_deg : cam[12]) * std::numbers::pi_v<float> / 180.f;
+  const float sy = 1.f / std::tan(fov / 2.f), sx = sy / aspect;
+  const Vec rows[3] = {Vec{right.x * sx, right.y * sx, right.z * sx}, Vec{up.x * sy, up.y * sy, up.z * sy}, fwd};
+  constexpr int kAtRow[3] = {0, 1, 3};
+  Mat m;
+  for (int i = 0; i < 3; ++i) {
+    m.at(kAtRow[i], 0) = rows[i].x;
+    m.at(kAtRow[i], 1) = rows[i].y;
+    m.at(kAtRow[i], 2) = rows[i].z;
+    m.at(kAtRow[i], 3) = -dot(rows[i], C);
+  }
+  m.at(2, 3) = k;
+  return m;
+}
+
+HRESULT STDMETHODCALLTYPE on_map(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub, D3D11_MAP type, UINT flags,
+                                 D3D11_MAPPED_SUBRESOURCE* out) {
+  const HRESULT hr = g_map_hook.stdcall<HRESULT>(c, res, sub, type, flags, out);
+  if (SUCCEEDED(hr) && c == g_cap_context && sub == 0 && out && out->pData && type != D3D11_MAP_READ &&
+      is_globals(res)) {
+    std::lock_guard lock(g_cap_mutex);
+    ++g_cap_maps;
+    for (Pending& p : g_pending_maps) {
+      if (!p.res || p.res == res) {
+        p = {res, static_cast<uint8_t*>(out->pData)};
+        break;
+      }
+    }
+  }
+  return hr;
+}
+
+void STDMETHODCALLTYPE on_unmap(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub) {
+  if (c == g_cap_context && sub == 0) {
+    std::lock_guard lock(g_cap_mutex);
+    for (Pending& p : g_pending_maps) {
+      if (p.res == res) {
+        tally(p.data);  // the game has written the whole buffer by now
+        if (g_ovr_active) rewrite(p.data);
+        p = {};
+        break;
+      }
+    }
+  }
+  g_unmap_hook.stdcall<void>(c, res, sub);
+}
+
+void STDMETHODCALLTYPE on_update(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub, const D3D11_BOX* box,
+                                 const void* src, UINT row_pitch, UINT depth_pitch) {
+  if (c == g_cap_context && sub == 0 && src && is_globals(res)) {
+    std::lock_guard lock(g_cap_mutex);
+    ++g_cap_updates;
+    if (!box) {
+      tally(static_cast<const uint8_t*>(src));
+    } else if (box->left <= kPersOffset && box->right >= kGlobalsMin) {
+      tally(static_cast<const uint8_t*>(src) - box->left);
+    } else {
+      ++g_cap_partial;
+    }
+  }
+  g_update_hook.stdcall<void>(c, res, sub, box, src, row_pitch, depth_pitch);
+}
+
+void install_capture(ID3D11DeviceContext* c) {
+  if (g_cap_context) return;
+  g_cap_context = c;
+  void** vtable = *reinterpret_cast<void***>(c);
+  constexpr int kMap = 14, kUnmap = 15, kUpdateSubresource = 48;
+  g_map_hook = safetyhook::create_inline(vtable[kMap], reinterpret_cast<void*>(&on_map));
+  g_unmap_hook = safetyhook::create_inline(vtable[kUnmap], reinterpret_cast<void*>(&on_unmap));
+  g_update_hook = safetyhook::create_inline(vtable[kUpdateSubresource], reinterpret_cast<void*>(&on_update));
+  log("render: camera capture hooks Map %s Unmap %s UpdateSubresource %s", g_map_hook ? "ok" : "FAILED",
+      g_unmap_hook ? "ok" : "FAILED", g_update_hook ? "ok" : "FAILED");
+}
+
+// Called at Present: closes the frame's tally.
+void end_capture_frame() {
+  std::lock_guard lock(g_cap_mutex);
+  g_cap_last.swap(g_cap_frame);
+  g_cap_frame.clear();
+  g_cap_last_writes = g_cap_writes;
+  g_cap_last_maps = g_cap_maps;
+  g_cap_last_updates = g_cap_updates;
+  g_cap_last_partial = g_cap_partial;
+  g_cap_writes = g_cap_maps = g_cap_updates = g_cap_partial = 0;
+  if (g_L_known) {
+    g_L_prev2 = g_L_prev;
+    g_L_prev = g_L_frame;
+    g_L_history = std::min(g_L_history + 1, 2);
+  } else {
+    g_L_history = 0;
+  }
+  g_L_known = false;
+  g_ovr_used = g_ovr_active;
+  g_ovr_used_vp = g_ovr_vp;
+  g_ovr_active = false;  // frame() turns it back on for the next frame
+  g_ovr_last_replaced = g_ovr_replaced;
+  g_ovr_last_early = g_ovr_early;
+  g_ovr_replaced = g_ovr_early = 0;
+}
+
+// Sets (or clears) the camera the next frame is drawn from.
+void set_override(const Mat* vp) {
+  std::lock_guard lock(g_cap_mutex);
+  g_ovr_active = vp != nullptr;
+  if (vp) g_ovr_vp = *vp;
+}
+
+// The override the frame that just ended was drawn with, if any.
+bool used_override(Mat& vp, uint64_t& replaced, uint64_t& early) {
+  std::lock_guard lock(g_cap_mutex);
+  vp = g_ovr_used_vp;
+  replaced = g_ovr_last_replaced;
+  early = g_ovr_last_early;
+  return g_ovr_used;
+}
+
+// What the game uploads for its stage geometry (seen on s091a):
+// - gVS_Mat0 = a pure translation by minus the camera's look-at point (rotation identity), and
+// - gVS_Pers = projection x view rotation, with no translation: its x/y/w rows carry no
+//   constant term (the z row's constant is the depth scale, ~50).
+// Skinned draws use a gVS_Pers with the translation folded in and leave stale data in gVS_Mat0,
+// so they don't match. A pair that matches both is the view-projection, split in two.
+bool stage_translation(const Mat& m) {
+  for (int row = 0; row < 4; ++row) {
+    for (int col = 0; col < 3; ++col) {
+      if (std::fabs(m.at(row, col) - (row == col ? 1.f : 0.f)) > 1e-5f) return false;
+    }
+  }
+  return m.at(3, 3) == 1.f;
+}
+
+bool rotation_projection(const Mat& p) {
+  const float w = std::sqrt(p.at(3, 0) * p.at(3, 0) + p.at(3, 1) * p.at(3, 1) + p.at(3, 2) * p.at(3, 2));
+  return std::fabs(p.at(0, 3)) < 1e-3f && std::fabs(p.at(1, 3)) < 1e-3f && std::fabs(p.at(3, 3)) < 1e-3f &&
+         std::fabs(w - 1.f) < 1e-3f && std::fabs(p.at(0, 0) * p.at(0, 0) + p.at(0, 1) * p.at(0, 1) + p.at(0, 2) * p.at(0, 2)) > 1e-6f;
+}
+
+// The main camera of the last frame: the most-used pair of that shape.
+bool captured_camera(Mat& pers, Mat& view, uint32_t& uses) {
+  std::lock_guard lock(g_cap_mutex);
+  const CamSample* best = nullptr;
+  for (const CamSample& e : g_cap_last) {
+    if (!stage_translation(from_rows(e.mat0)) || !rotation_projection(from_rows(e.pers))) continue;
+    if (!best || e.count > best->count) best = &e;
+  }
+  if (!best) return false;
+  pers = from_rows(best->pers);
+  view = from_rows(best->mat0);
+  uses = best->count;
+  return true;
+}
+
+std::string mat_text(const float* f) {
+  char text[400];
+  snprintf(text, sizeof(text), "[%.4g %.4g %.4g %.4g | %.4g %.4g %.4g %.4g | %.4g %.4g %.4g %.4g | %.4g %.4g %.4g %.4g]",
+           f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15]);
+  return text;
+}
+
+// Diagnostics: the most-used pairs of the last frame, and where Snake lands through each.
+void log_capture(const Vec* snake) {
+  std::vector<CamSample> last;
+  uint64_t writes, maps, updates, partial;
+  {
+    std::lock_guard lock(g_cap_mutex);
+    last = g_cap_last;
+    writes = g_cap_last_writes;
+    maps = g_cap_last_maps;
+    updates = g_cap_last_updates;
+    partial = g_cap_last_partial;
+  }
+  std::sort(last.begin(), last.end(), [](const CamSample& a, const CamSample& b) { return a.count > b.count; });
+  log("render: capture: %llu $Globals writes (%llu maps, %llu updates, %llu partial), %zu distinct",
+      static_cast<unsigned long long>(writes), static_cast<unsigned long long>(maps),
+      static_cast<unsigned long long>(updates), static_cast<unsigned long long>(partial), last.size());
+  for (size_t i = 0; i < last.size() && i < 6; ++i) {
+    const CamSample& e = last[i];
+    const Mat vp = mul(from_rows(e.pers), from_rows(e.mat0));
+    log("render:   #%zu x%u pers %s", i, e.count, mat_text(e.pers).c_str());
+    log("render:       mat0 %s%s%s", mat_text(e.mat0).c_str(), snake ? " snake -> " : "",
+        snake ? project(vp, *snake).c_str() : "");
+  }
+}
+
 // ---- drawing ---------------------------------------------------------------------------------
 
 // Flat colours (0..255): deck, truck, wheel.
@@ -553,8 +927,8 @@ int g_game_depth_seen = -1;  // last logged game-depth outcome
 // Picks the depth buffer: the game's (read-only view) when asked and one is bound at the back
 // buffer's size, else ours (cleared). Logs whenever the outcome changes.
 ID3D11DepthStencilView* pick_depth(ID3D11Device* d, ID3D11DeviceContext* c, const SavedState& saved,
-                                   const D3D11_TEXTURE2D_DESC& bb, bool want_game, ComPtr<ID3D11DepthStencilView>& game_view,
-                                   bool& is_game) {
+                                   const D3D11_TEXTURE2D_DESC& bb, bool want_game, bool reversed,
+                                   ComPtr<ID3D11DepthStencilView>& game_view, bool& is_game) {
   is_game = false;
   if (want_game) {
     int outcome = 0;  // 0 none bound, 1 size/format mismatch, 2 used
@@ -590,13 +964,33 @@ ID3D11DepthStencilView* pick_depth(ID3D11Device* d, ID3D11DeviceContext* c, cons
     g_game_depth_seen = -1;
   }
   ID3D11DepthStencilView* own = own_depth(d, bb);
-  if (own) c->ClearDepthStencilView(own, D3D11_CLEAR_DEPTH, 1.f, 0);
+  if (own) c->ClearDepthStencilView(own, D3D11_CLEAR_DEPTH, reversed ? 0.f : 1.f, 0);
   return own;
 }
 
 void frame(IDXGISwapChain* swap) {
   g_presents.fetch_add(1, std::memory_order_relaxed);
+  ComPtr<ID3D11Device> device;
+  if (FAILED(swap->GetDevice(IID_PPV_ARGS(&device)))) return;
+  ComPtr<ID3D11DeviceContext> c;
+  device->GetImmediateContext(&c);
+  install_capture(c.Get());
+  end_capture_frame();
   const Settings s = settings();
+  // The camera the frame that just ended was drawn from, and the one for the next frame.
+  Mat skate_vp;
+  uint64_t replaced = 0, early = 0;
+  const bool have_skate_camera = used_override(skate_vp, replaced, early);
+  {
+    float cam[skate::kCameraFloats];
+    DXGI_SWAP_CHAIN_DESC sd{};
+    if (s.camera == Settings::Camera::Skate && skate::camera(cam) && SUCCEEDED(swap->GetDesc(&sd)) &&
+        sd.BufferDesc.Width > 0 && sd.BufferDesc.Height > 0) {
+      const float bb_aspect = static_cast<float>(sd.BufferDesc.Width) / static_cast<float>(sd.BufferDesc.Height);
+      const Mat next = skate_view_projection(cam, s.aspect > 0.f ? s.aspect : bb_aspect, s.skate_fov_deg, 50.f);
+      set_override(&next);
+    }
+  }
   float pose[skate::kBoardBodies * 16];
   const bool have_board = g_board_loaded && skate::board_pose(pose);
   game::Vec3 snake{};
@@ -608,36 +1002,42 @@ void frame(IDXGISwapChain* swap) {
     }
   }
   game::Vec3 eye{}, target{};
-  if ((!have_board && !have_snake) || !game::camera(eye, target)) {
+  Mat game_pers, game_cam_view;
+  uint32_t game_uses = 0;
+  const bool have_game_camera = s.camera != Settings::Camera::Object && captured_camera(game_pers, game_cam_view, game_uses);
+  if ((!have_board && !have_snake) || (!have_skate_camera && !have_game_camera && !game::camera(eye, target))) {
     g_was_drawing = false;
     return;
   }
-
-  ComPtr<ID3D11Device> device;
-  if (FAILED(swap->GetDevice(IID_PPV_ARGS(&device))) || !ensure_gpu(device.Get())) return;
+  if (!ensure_gpu(device.Get())) return;
   ComPtr<ID3D11Texture2D> back;
   if (FAILED(swap->GetBuffer(0, IID_PPV_ARGS(&back)))) return;
   D3D11_TEXTURE2D_DESC bb{};
   back->GetDesc(&bb);
   ComPtr<ID3D11RenderTargetView> rtv;
   if (bb.Width == 0 || bb.Height == 0 || FAILED(device->CreateRenderTargetView(back.Get(), nullptr, &rtv))) return;
-  ComPtr<ID3D11DeviceContext> c;
-  device->GetImmediateContext(&c);
 
   SavedState saved;
   save(c.Get(), saved);
-  ComPtr<ID3D11DepthStencilView> game_view;
-  bool game_depth = false;
-  ID3D11DepthStencilView* dsv = pick_depth(device.Get(), c.Get(), saved, bb, s.depth_game, game_view, game_depth);
-
   const float aspect = s.aspect > 0.f ? s.aspect : static_cast<float>(bb.Width) / static_cast<float>(bb.Height);
   const Vec eye_v{eye.x, eye.y, eye.z}, target_v{target.x, target.y, target.z};
-  const Mat vp = mul(perspective(s.fov_deg * std::numbers::pi_v<float> / 180.f, aspect, s.near_mm, s.far_mm, s.flip_z),
-                     look_at(eye_v, target_v, s.flip_z));
+  const Mat vp = have_skate_camera  ? skate_vp
+                 : have_game_camera ? mul(game_pers, game_cam_view)
+                     : mul(perspective(s.fov_deg * std::numbers::pi_v<float> / 180.f, aspect, s.near_mm, s.far_mm, s.flip_z),
+                           look_at(eye_v, target_v, s.flip_z));
+  // The game's projection gives depth = k / distance (nearer = larger), so compare the other way.
+  const bool reversed = have_skate_camera || (have_game_camera && game_pers.at(2, 3) > 0.f);
+
+  ComPtr<ID3D11DepthStencilView> game_view;
+  bool game_depth = false;
+  ID3D11DepthStencilView* dsv =
+      pick_depth(device.Get(), c.Get(), saved, bb, s.depth_game, reversed, game_view, game_depth);
 
   ID3D11RenderTargetView* target_rtv = rtv.Get();
   c->OMSetRenderTargetsAndUnorderedAccessViews(1, &target_rtv, dsv, 0, D3D11_KEEP_UNORDERED_ACCESS_VIEWS, nullptr, nullptr);
-  c->OMSetDepthStencilState(game_depth ? g_gpu.depth_game.Get() : g_gpu.depth_own.Get(), 0);
+  c->OMSetDepthStencilState(game_depth ? (reversed ? g_gpu.depth_game_rev : g_gpu.depth_game).Get()
+                                       : (reversed ? g_gpu.depth_own_rev : g_gpu.depth_own).Get(),
+                            0);
   c->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
   const D3D11_VIEWPORT viewport{0.f, 0.f, static_cast<float>(bb.Width), static_cast<float>(bb.Height), 0.f, 1.f};
   c->RSSetViewports(1, &viewport);
@@ -684,9 +1084,30 @@ void frame(IDXGISwapChain* swap) {
   g_width = bb.Width;
   g_height = bb.Height;
   if (!g_was_drawing || drawn % 300 == 0) {
-    log("render: frame %llu %ux%u fmt %d aspect %.3f; eye %.0f %.0f %.0f look-at %.0f %.0f %.0f (mm); %s",
-        static_cast<unsigned long long>(drawn), bb.Width, bb.Height, static_cast<int>(bb.Format), aspect, eye.x, eye.y,
-        eye.z, target.x, target.y, target.z, describe(s).c_str());
+    if (have_skate_camera) {
+      float cam[skate::kCameraFloats] = {};
+      skate::camera(cam);
+      log("render: frame %llu %ux%u; skate camera: %llu draws redrawn (%llu before the frame's look-at was known); "
+          "eye %.0f %.0f %.0f mm; %s",
+          static_cast<unsigned long long>(drawn), bb.Width, bb.Height, static_cast<unsigned long long>(replaced),
+          static_cast<unsigned long long>(early), cam[0], cam[1], cam[2], describe(s).c_str());
+    } else if (have_game_camera) {
+      log("render: frame %llu %ux%u fmt %d; game camera (pair used %u times): look-at %.0f %.0f %.0f mm, forward %.3f %.3f "
+          "%.3f, x scale %.4f, y scale %.4f, depth %.3f/w; %s",
+          static_cast<unsigned long long>(drawn), bb.Width, bb.Height, static_cast<int>(bb.Format), game_uses,
+          -game_cam_view.at(0, 3), -game_cam_view.at(1, 3), -game_cam_view.at(2, 3), game_pers.at(3, 0),
+          game_pers.at(3, 1), game_pers.at(3, 2),
+          std::sqrt(game_pers.at(0, 0) * game_pers.at(0, 0) + game_pers.at(0, 1) * game_pers.at(0, 1) +
+                    game_pers.at(0, 2) * game_pers.at(0, 2)),
+          std::sqrt(game_pers.at(1, 0) * game_pers.at(1, 0) + game_pers.at(1, 1) * game_pers.at(1, 1) +
+                    game_pers.at(1, 2) * game_pers.at(1, 2)),
+          game_pers.at(2, 3), describe(s).c_str());
+    } else {
+      log("render: frame %llu %ux%u fmt %d aspect %.3f; eye %.0f %.0f %.0f look-at %.0f %.0f %.0f (mm); %s",
+          static_cast<unsigned long long>(drawn), bb.Width, bb.Height, static_cast<int>(bb.Format), aspect, eye.x, eye.y,
+          eye.z, target.x, target.y, target.z, describe(s).c_str());
+    }
+    log_capture(have_snake ? &at_snake : nullptr);
     if (have_board) log("render:   deck at %.0f %.0f %.0f mm -> %s", deck.x, deck.y, deck.z, project(vp, deck).c_str());
     if (have_snake) {
       log("render:   snake at %.0f %.0f %.0f mm -> %s", snake.x, snake.y, snake.z, project(vp, at_snake).c_str());
@@ -795,6 +1216,12 @@ void start(const std::filesystem::path& plugin_dir, HMODULE ffi) {
 }
 
 std::string set(const std::string& key, const std::string& value) {
+  if (key == "capture") {  // `render capture now`: log the last frame's captured camera matrices
+    const game::Vec3* p = game::snake_position();
+    const Vec snake = p ? Vec{p->x, p->y, p->z} : Vec{};
+    log_capture(p ? &snake : nullptr);
+    return "ok logged";
+  }
   Settings s;
   {
     std::lock_guard lock(g_settings_mutex);

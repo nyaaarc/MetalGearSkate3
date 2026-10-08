@@ -55,8 +55,15 @@ void mgsk_session_free(MgskSession* session);
 /* Replaces the world the skater rides (9 floats per triangle); takes effect next tick. */
 int mgsk_install_world(MgskSession* session, const float* triangles, uint32_t triangle_count);
 /* Replaces the world with the solid collision of an MGS3 .geom file, coordinates (mm) times
- * units_per_mm; takes effect next tick. Returns the triangle count, or -1 on failure. */
+ * units_per_mm, plus grind rails found on its ledges, kerbs and railings; takes effect next
+ * tick. Returns the triangle count, or -1 on failure. */
 int mgsk_install_geom(MgskSession* session, const char* geom_path, float units_per_mm);
+/* Grind rails the last mgsk_install_geom gave the session (0 before any), or -1. */
+int mgsk_rail_count(const MgskSession* session);
+/* The rails mgsk_install_geom would find in a .geom file, as segments (6 floats: start, end,
+ * coordinates as mgsk_install_geom); writes up to capacity, returns the total segment count,
+ * or -1. rail_count (may be null) receives the number of rails. For tests and debugging. */
+int mgsk_geom_rails(const char* geom_path, float units_per_mm, float* out, uint32_t capacity, int* rail_count);
 /* Number of solid triangles in a .geom file, or -1 on failure. Decodes only. */
 int mgsk_geom_triangle_count(const char* geom_path);
 /* Writes up to capacity .geom triangles (9 floats each, mm) to out; returns the total, or -1. */
@@ -86,6 +93,9 @@ int mgsk_retarget_init(MgskSession* session, const char* snake_mdl_path, int mir
  * each, MGS3 layout: rows X axis, Y axis, Z axis, translation (x, y, z, 1), millimetres). Needs
  * mgsk_retarget_init. Returns the count written (57 for sna_def.mdl), or -1. */
 int mgsk_snake_pose(const MgskSession* session, float* out, uint32_t max_bones);
+/* Writes the engine's chase camera: position (3, metres, +Y up), basis (9, three columns),
+ * vertical field of view in degrees (1) = 13 floats. 0 on success, -1 if no camera frame yet. */
+int mgsk_camera(const MgskSession* session, float* out);
 /* Writes up to max_bodies board part world transforms (16 floats each, column-major) to out,
  * in MGSK_BODY_* order. Returns the count written, or -1. */
 int mgsk_board_pose(const MgskSession* session, float* out, uint32_t max_bodies);

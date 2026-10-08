@@ -59,6 +59,10 @@ The stage's real collision is loaded on F5; Snake still plays his walk animation
 - Board data for drawing: `mgsk_board_pose` gives the engine's seven board bodies (deck, trucks,
   wheels) as world transforms, and `mgsk_board_mesh` reads each part's mesh from the converted
   `skater.glb` in that body's frame; `tools/board_check.py` checks both off-game.
+- The board is drawn into the game's frame (Present hook) with the game's own view-projection,
+  read from its vertex-shader constants each frame; in game it sits on the ground under Snake.
+- While skating, the whole frame is drawn from Skate 3's own chase camera (`mgsk_camera`): the
+  game's camera constants are rewritten per draw, so scenery, Snake and the board all follow it.
 - Retargeting groundwork: Snake's 57-bone skeleton decoded from `sna_def.mdl` (`tools/mdl_bones.py`),
   the skater's 36 bones exported (`mgsk_bone_count`/`mgsk_bone_name`/`mgsk_bones`), and a
   Snake-to-skater bone map with axis and rest-pose notes in `docs/retarget.json`.
@@ -67,7 +71,7 @@ The stage's real collision is loaded on F5; Snake still plays his walk animation
 
 - A stable lookup for the camera and skeleton
 - Feeding MGS3 collision to the skate world; posing Snake from the skater (`mgsk_snake_pose` computes his bones, not applied in game)
-- Drawing the board in game: written (Present hook, flat colours), not yet seen in game; camera FOV untuned, no scene occlusion
+- Drawing the board in game: flat colours only, no scene occlusion (no depth buffer is bound at Present)
 - Setup (finding MGS3, converting your Skate 3 files), settings menu, audio
 
 ## Credits

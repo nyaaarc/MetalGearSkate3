@@ -133,6 +133,26 @@ analogues to find, guided by the MGS2 patterns and the GirianSeed decomp.
   `+0xB0` bone count (57), `+0xC0` bone matrix array; `+0x00` → static model data
   (`exe+1E222A0`). `exe+CE760` copies its bones (plus a global origin offset at
   `[[exe+1D79840]+0x1D0]`) into a shadow buffer; that buffer is what the earlier lift test hit.
+- **Render camera (D3D11 vertex-shader constants).** The camera object above is *not* what the
+  frame is drawn with. Every stock 3D vertex shader (dumped from memory, D3DDisassemble) binds one
+  `$Globals` cbuffer at b0, compiled `row_major` (rows contiguous, `clip = M * v`), >= 3472 bytes:
+  `gVS_FogColor` @0, `gVS_FogParam` @16, `gVS_LightDir` @32, `gVS_LightCol` @96, `gVS_Pers` @480,
+  `gVS_Opt0` @544, `gVS_Mat0` @608 (rigid models), `gVS_Mat[]` float4x3 from @624 (skinned, view
+  space bones). Rigid: `clip = gVS_Pers * gVS_Mat0 * pos`. For stage geometry `gVS_Mat0` is a pure
+  translation by minus the camera's look-at point and `gVS_Pers` is projection x view rotation with
+  no translation (row 3 = camera forward, unit; e.g. s091a: x row `-1.06 * (1,0,0)`, y row scale
+  ~2.36-2.43, z row `(~0, ~0, ~0, 50)`). So depth is `50 / w` (w = mm along forward; nearer =
+  larger, no far plane) and the pair's product is the view-projection for the full back buffer.
+  Skinned draws use a `gVS_Pers` with translation folded in. The game fills `$Globals` with
+  `Map(WRITE_DISCARD)` per draw (~1500/frame on s091a), never `UpdateSubresource`. No depth
+  buffer is bound at Present. `g_View`/`g_ViewProjection` exist in the layout but are unused.
+  Every main-camera `gVS_Pers` (rows 0, 1, 3 orthogonal, row 3 unit, row 2 = `(~0, ~0, ~0, k)`)
+  factors as `S * T(d)`: S the frame's projection x view rotation, d = 0 for stage and rigid
+  models (`gVS_Mat0 = T(-L) * world`, L = look-at) and an object origin minus L for skinned ones
+  (checked: k = 50.006 after taking d out of Snake's). So the world is `T(L + d) * gVS_Mat0 * v`,
+  and replacing `gVS_Pers` by `VP * T(L + d)` (VP with row 2 = `(0, 0, 0, k)`) redraws the draw
+  from any camera VP. The game draws a stage piece before any other main-camera draw (0 draws
+  before L was known per frame on s091a). Light/shadow passes have `row 3 = (0, 0, 0, 1)`.
 - **Signatures (MC 3.0.0, both unique in live code):**
   - `48 8B 0D ?? ?? ?? ?? 8B E8 48 85 C9 74 08 8B 81 D8` (disp at +3) → `exe+1E16CC0`,
     pointer to Snake's actor (`pos-0x130`). Used at dozens of sites with a null check.

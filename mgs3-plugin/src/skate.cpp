@@ -95,11 +95,16 @@ HMODULE g_ffi_module = nullptr;
 std::mutex g_pose_mutex;
 float g_pose[kBoardBodies * 16];
 bool g_pose_valid = false;
+// Engine chase camera (position in mm, basis columns, vertical fov in degrees), same mutex.
+float g_camera[kCameraFloats];
+bool g_camera_valid = false;
 
-void publish_pose(const float* pose) {
+void publish_pose(const float* pose, const float* camera = nullptr) {
   std::lock_guard lock(g_pose_mutex);
   if (pose) memcpy(g_pose, pose, sizeof(g_pose));
   g_pose_valid = pose != nullptr;
+  if (camera) memcpy(g_camera, camera, sizeof(g_camera));
+  g_camera_valid = camera != nullptr;
 }
 
 template <typename T>
@@ -288,6 +293,8 @@ DWORD WINAPI run(LPVOID) {
   // Optional: older skate_ffi.dll builds have no board export (then nothing is drawn).
   const auto pose_fn = reinterpret_cast<decltype(&mgsk_board_pose)>(GetProcAddress(g_ffi_module, "mgsk_board_pose"));
   if (!pose_fn) log("skate: skate_ffi.dll has no mgsk_board_pose; the board won't be drawn");
+  const auto camera_fn = reinterpret_cast<decltype(&mgsk_camera)>(GetProcAddress(g_ffi_module, "mgsk_camera"));
+  if (!camera_fn) log("skate: skate_ffi.dll has no mgsk_camera; the game camera stays");
   // Retargeting onto Snake's own skeleton (his model file in the game's assets).
   bool posing = false;
   {
@@ -413,7 +420,13 @@ DWORD WINAPI run(LPVOID) {
     if (int16_t* yaw = game::snake_yaw()) *yaw = headings.to_mgs(heading);
     if (int16_t* target = game::snake_target_yaw()) *target = headings.to_mgs(heading);
     float pose[kBoardBodies * 16];
-    publish_pose(pose_fn && pose_fn(session, pose, kBoardBodies) == kBoardBodies ? pose : nullptr);
+    float camera[kCameraFloats];
+    const bool have_camera = camera_fn && camera_fn(session, camera) == 0;
+    if (have_camera) {
+      for (int i = 0; i < 3; ++i) camera[i] *= kMmPerUnit;
+    }
+    publish_pose(pose_fn && pose_fn(session, pose, kBoardBodies) == kBoardBodies ? pose : nullptr,
+                 have_camera ? camera : nullptr);
     st.skater[0] = m[12];
     st.skater[1] = m[13];
     st.skater[2] = m[14];
@@ -423,7 +436,8 @@ DWORD WINAPI run(LPVOID) {
     set_status(st);
     if (++ticks % 120 == 0) {
       const pose::Stats ps = pose::stats();
-      log("skate: pose hook calls %llu, applied %llu, last bone count %d", ps.calls, ps.applied, ps.last_count);
+      log("skate: pose hook calls %llu, applied %llu, last bone count %d, nearest 57-bone object %.0f mm, relative %d",
+          ps.calls, ps.applied, ps.last_count, ps.nearest_mm, ps.relative);
       log("skate: skater at %.2f %.2f %.2f (m) heading %.0f deg; pad buttons %04X left %d,%d right %d,%d", m[12], m[13], m[14],
           heading * 180.f / std::numbers::pi_v<float>, pad.buttons, pad.left[0], pad.left[1], pad.right[0], pad.right[1]);
     }
@@ -433,6 +447,12 @@ DWORD WINAPI run(LPVOID) {
 }  // namespace
 
 void request(bool on) { g_request = on ? 1 : 0; }
+
+bool camera(float (&out)[kCameraFloats]) {
+  std::lock_guard lock(g_pose_mutex);
+  if (g_camera_valid) memcpy(out, g_camera, sizeof(g_camera));
+  return g_camera_valid;
+}
 
 bool board_pose(float (&out)[kBoardBodies * 16]) {
   std::lock_guard lock(g_pose_mutex);
