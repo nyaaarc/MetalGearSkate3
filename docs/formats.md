@@ -419,3 +419,9 @@ relative to his *object's* origin, including the 22; there are no separate rigid
 or a second skeleton. Static scenery draws have d = 0 and are placed by gVS_Mat0 (translation
 = world - L). No draw with Snake's bone rotations relative to origin 0 (an earlier dump's
 shadow-like draws) appeared in this frame.
+
+- **Snake's attachments (headband, hair, gear):** no separate actor. His headband/hair draws
+  (~620 mm above his object origin) use palettes relative to his object origin whose slots sit
+  near his head bone (3) but are their own small rig (~70 mm off his bones). Rigid gear draws use
+  single slots placing the model at its world position (relative to his object or the draw's
+  origin). Both are moved with the nearest joint's delta (render.cpp anchor_slot / move_with_anchor).

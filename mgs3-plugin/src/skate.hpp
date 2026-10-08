@@ -53,6 +53,10 @@ void reset_recent();
 constexpr int kBoardBodies = 7;
 bool board_pose(float (&out)[kBoardBodies * 16]);
 
+// The board and Snake's retargeted bones (pose::kSnakeBones * 16 floats) from one engine tick.
+// False unless both are available. For drawing them in step within a frame.
+bool tick_pose(float (&board)[kBoardBodies * 16], float (&snake)[57 * 16]);
+
 // The engine's chase camera from the latest tick: position (3, mm, game axes), basis (9, columns:
 // up x forward, up, forward), vertical field of view (degrees). False while not skating or when
 // the DLL has no mgsk_camera. Safe from any thread.

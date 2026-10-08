@@ -147,10 +147,17 @@ bool g_pose_valid = false;
 float g_camera[kCameraFloats];
 bool g_camera_valid = false;
 
-void publish_pose(const float* pose, const float* camera = nullptr) {
+// Snake's retargeted bones from the same tick as g_pose (same mutex), so the renderer can draw
+// board and Snake from one tick (reading them separately mid-tick jittered him on the board).
+float g_snake[pose::kSnakeBones * 16];
+bool g_snake_valid = false;
+
+void publish_pose(const float* pose, const float* camera = nullptr, const float* snake = nullptr) {
   std::lock_guard lock(g_pose_mutex);
   if (pose) memcpy(g_pose, pose, sizeof(g_pose));
   g_pose_valid = pose != nullptr;
+  if (snake) memcpy(g_snake, snake, sizeof(g_snake));
+  g_snake_valid = snake != nullptr;
   if (camera) memcpy(g_camera, camera, sizeof(g_camera));
   g_camera_valid = camera != nullptr;
 }
@@ -611,8 +618,9 @@ DWORD WINAPI run(LPVOID) {
     if (have_camera) {
       for (int i = 0; i < 3; ++i) camera[i] *= kMmPerUnit;
     }
+    const bool have_snake = posing && f.snake_pose(session, snake_bones, pose::kSnakeBones) == pose::kSnakeBones;
     publish_pose(pose_fn && pose_fn(session, pose, kBoardBodies) == kBoardBodies ? pose : nullptr,
-                 have_camera ? camera : nullptr);
+                 have_camera ? camera : nullptr, have_snake ? snake_bones : nullptr);
     {
       const float dx = m[12] - st.skater[0], dz = m[14] - st.skater[2];
       st.speed_mps = placed ? 0.f : std::sqrt(dx * dx + dz * dz) / period;
@@ -631,7 +639,7 @@ DWORD WINAPI run(LPVOID) {
       riding_spot = grounded ? Spot{{m[12], m[13], m[14]}, heading} : Spot{{}, NAN};
     }
     stealth.hold();
-    if (posing) pose::publish(f.snake_pose(session, snake_bones, pose::kSnakeBones) == pose::kSnakeBones ? snake_bones : nullptr);
+    if (posing) pose::publish(have_snake ? snake_bones : nullptr);
     set_status(st);
     if (++ticks % 120 == 0) {
       const pose::Stats ps = pose::stats();
@@ -662,6 +670,14 @@ bool camera(float (&out)[kCameraFloats]) {
   std::lock_guard lock(g_pose_mutex);
   if (g_camera_valid) memcpy(out, g_camera, sizeof(g_camera));
   return g_camera_valid;
+}
+
+bool tick_pose(float (&board)[kBoardBodies * 16], float (&snake)[pose::kSnakeBones * 16]) {
+  std::lock_guard lock(g_pose_mutex);
+  if (!g_pose_valid || !g_snake_valid) return false;
+  memcpy(board, g_pose, sizeof(g_pose));
+  memcpy(snake, g_snake, sizeof(g_snake));
+  return true;
 }
 
 bool board_pose(float (&out)[kBoardBodies * 16]) {

@@ -1167,11 +1167,19 @@ struct SkinFrame {
   Vec body_origin;          // this frame's origin of his body draws (L + d), once one is seen
   bool have_body = false;
   float ours[kSnakeBones * 16];
-  // slot content hash -> bone + kSnakeBones * pass (-1 = not Snake's)
+  float board[skate::kBoardBodies * 16];  // the board from the same tick as `ours`
+  bool have_board = false;
+  // slot content hash -> bone + kSnakeBones * pass, or kAnchored + bone * 2 + (1 if relative to
+  // the draw's own origin) for attachments (-1 = not Snake's)
   std::vector<std::pair<uint64_t, int>> slots;
   uint64_t posed = 0, draws = 0;
 };
 SkinFrame g_skin;
+constexpr int kAnchored = 1 << 20;
+// The board pose to draw at Present: the tick Snake was posed from this frame, so the two move in
+// step (guarded by g_cap_mutex; consumed by the board draw).
+float g_frame_board[skate::kBoardBodies * 16];
+bool g_frame_board_valid = false;
 
 uint64_t hash_slot(const float* f) {
   uint64_t h = 1469598103934665603ull;
@@ -1213,6 +1221,72 @@ int match_bone(const float* slot, const float* bones, Vec origin, float& err) {
   return best;
 }
 
+// Attachments that ride on Snake's bones without being them: his headband and hair (their own
+// small skinned rig, following his head) and gear held or carried by him (single-slot rigid
+// models). Such a slot is found by its position: the world point it places (relative to his
+// object's origin, or to the draw's own) within kAnchorMm of one of his joints. Returns
+// kAnchored + bone * 2 + (relative to the draw's origin), or -1.
+constexpr float kAnchorMm = 450.f;
+constexpr float kAnchorDrawMm = 1500.f;
+int anchor_slot(const float* slot, Vec d) {
+  if (g_skin.passes == 0) return -1;
+  const float* game = g_skin.game[0];
+  const Vec O = g_skin.origin[0];
+  const Vec Od{g_L_frame.x + d.x, g_L_frame.y + d.y, g_L_frame.z + d.z};
+  // Only draws on or near him: other draws carry stale palette contents (often his own slots
+  // from an earlier draw) that would otherwise anchor too.
+  const Vec off = Od - O;
+  if (dot(off, off) > kAnchorDrawMm * kAnchorDrawMm) return -1;
+  int best = -1;
+  float best_d2 = kAnchorMm * kAnchorMm;
+  for (int rel = 0; rel < 2; ++rel) {
+    const Vec base = rel ? Od : O;
+    const Vec p{slot[3] + base.x, slot[7] + base.y, slot[11] + base.z};
+    for (int b = 0; b < kSnakeBones; ++b) {
+      const float* m = game + b * 16;
+      const Vec t{m[12], m[13], m[14]};
+      const Vec gap = p - t;
+      const float d2 = dot(gap, gap);
+      if (d2 < best_d2) {
+        best_d2 = d2;
+        best = kAnchored + b * 2 + rel;
+      }
+    }
+  }
+  return best;
+}
+
+// Moves an attachment slot with its anchor bone: new = ours(bone) * inverse(game(bone)) * slot.
+void move_with_anchor(float* slot, int code, Vec d) {
+  const int bone = code / 2;
+  const bool rel = code % 2;
+  const float* g = g_skin.game[0] + bone * 16;  // rows: X, Y, Z axis, translation
+  const float* o = g_skin.ours + bone * 16;
+  // Linear maps (world from bone): column c = row c of the matrix. Delta = A_ours * A_game^T.
+  float delta[3][3];
+  for (int r = 0; r < 3; ++r) {
+    for (int c = 0; c < 3; ++c) {
+      float v = 0;
+      for (int k = 0; k < 3; ++k) v += o[k * 4 + r] * g[k * 4 + c];
+      delta[r][c] = v;
+    }
+  }
+  const Vec Od{g_L_frame.x + d.x, g_L_frame.y + d.y, g_L_frame.z + d.z};
+  const Vec base = rel ? Od : g_skin.origin[0];
+  // Where the slot's origin lands now, relative to the anchor joint, carried by the delta.
+  const float p[3] = {slot[3] + base.x - g[12], slot[7] + base.y - g[13], slot[11] + base.z - g[14]};
+  const Vec out_base = rel ? Od : (g_skin.have_body ? g_skin.body_origin : g_skin.origin[0]);
+  const float ob[3] = {out_base.x, out_base.y, out_base.z};
+  float rot[3][3];
+  for (int r = 0; r < 3; ++r) {
+    for (int c = 0; c < 3; ++c) rot[r][c] = slot[r * 4 + c];
+  }
+  for (int r = 0; r < 3; ++r) {
+    for (int c = 0; c < 3; ++c) slot[r * 4 + c] = delta[r][0] * rot[0][c] + delta[r][1] * rot[1][c] + delta[r][2] * rot[2][c];
+    slot[r * 4 + 3] = delta[r][0] * p[0] + delta[r][1] * p[1] + delta[r][2] * p[2] + o[12 + r] - ob[r];
+  }
+}
+
 // Rewrites Snake's palette in a $Globals image with the published pose; true if this draw was
 // one of Snake's. Caller holds g_cap_mutex.
 bool pose_snake(uint8_t* globals) {
@@ -1222,7 +1296,9 @@ bool pose_snake(uint8_t* globals) {
   if (!main_camera_draw(globals, pers, d) || dot(d, d) < 1.f) return false;  // skinned draws only
   if (g_skin.state == 0) {
     float objects[pose::kBoneHistory][16];
-    g_skin.passes = pose::current(g_skin.ours) ? pose::game_bone_history(g_skin.game, objects, pose::kBoneHistory) : 0;
+    g_skin.have_board = skate::tick_pose(g_skin.board, g_skin.ours);
+    const bool have_ours = g_skin.have_board || pose::current(g_skin.ours);
+    g_skin.passes = have_ours ? pose::game_bone_history(g_skin.game, objects, pose::kBoneHistory) : 0;
     for (int k = 0; k < g_skin.passes; ++k) g_skin.origin[k] = {objects[k][12], objects[k][13], objects[k][14]};
     g_skin.state = g_skin.passes > 0 ? 1 : -1;
     if (g_skin.state < 0) return false;
@@ -1254,9 +1330,15 @@ bool pose_snake(uint8_t* globals) {
           bone = b + kSnakeBones * k;
         }
       }
+      if (bone < 0) bone = anchor_slot(slot, d);
       g_skin.slots.emplace_back(h, bone);
     }
     if (bone < 0) continue;
+    if (bone >= kAnchored) {
+      move_with_anchor(slot, bone - kAnchored, d);
+      ++g_skin.posed;
+      continue;
+    }
     const int pass = bone / kSnakeBones;
     bone %= kSnakeBones;
     const float* m = g_skin.ours + bone * 16;
@@ -1290,6 +1372,8 @@ bool pose_snake(uint8_t* globals) {
 
 void end_skin_frame() {
   if (g_skin.posed || g_skin.draws) pose::count_applied(g_skin.posed, g_skin.draws);
+  g_frame_board_valid = g_skin.state == 1 && g_skin.have_board;
+  if (g_frame_board_valid) memcpy(g_frame_board, g_skin.board, sizeof(g_frame_board));
   g_skin.state = 0;
   g_skin.have_body = false;
   g_skin.slots.clear();
@@ -1719,7 +1803,14 @@ void frame(IDXGISwapChain* swap) {
     }
   }
   float pose[skate::kBoardBodies * 16];
-  const bool have_board = g_board_loaded && skate::board_pose(pose);
+  // The board from the tick Snake was posed from this frame, else the latest.
+  bool have_board = false;
+  if (g_board_loaded && g_frame_board_valid) {
+    memcpy(pose, g_frame_board, sizeof(pose));
+    have_board = true;
+  } else if (g_board_loaded) {
+    have_board = skate::board_pose(pose);
+  }
   game::Vec3 snake{};
   bool have_snake = false;
   if (s.debug) {
