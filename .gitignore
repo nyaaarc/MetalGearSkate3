@@ -1,0 +1,40 @@
+# Whitelist .gitignore: everything is ignored unless listed below.
+# This keeps MGS3 and Skate 3 files, converted skate data, Ghidra databases and dumps
+# out of the repo. To track a new top-level path, add a `!` line for it on purpose.
+/*
+!/.gitignore
+!/.gitmodules
+!/README.md
+!/AGENTS.md
+!/LICENSE
+!/build.cmd
+
+!/docs/
+!/mashup/
+!/mgs3-plugin/
+!/skate-ffi/
+!/release/
+!/tools/
+
+# Never commit game data or build output, even inside whitelisted folders.
+**/skate-data/
+# ...except the engine crate of that name.
+!/mashup/skate/crates/skate-data/
+**/extracted/
+**/dumps/
+**/build/
+**/target/
+**/*.gpr
+**/*.rep
+**/*.xex
+**/*.iso
+**/*.ctxr
+**/*.cmdl
+**/*.mdl
+**/*.geom
+**/*.tri
+**/*.dll
+**/*.asi
+**/*.exe
+**/*.log
+**/__pycache__/

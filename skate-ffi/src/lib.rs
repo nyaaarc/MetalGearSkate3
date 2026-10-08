@@ -1,0 +1,271 @@
+//! C API over the Skate 3 Rust engine, loaded by `MetalGearSkate.asi` inside MGS3.
+//! Mirrored in `include/skate_ffi.h`; keep the two in sync.
+//!
+//! Every function catches panics and reports failure through its return value plus
+//! `mgsk_last_error`, because unwinding into the game's C++ is undefined behaviour.
+
+use std::cell::RefCell;
+use std::ffi::{CStr, CString, c_char};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::PathBuf;
+
+use skate_host::bridge::{Controls, Session};
+
+mod geom;
+
+static VERSION: &CStr = c"skate-ffi 0.1.0";
+
+thread_local! {
+    static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
+}
+
+fn set_error(message: impl Into<String>) {
+    let message = CString::new(message.into().replace('\0', " ")).unwrap_or_default();
+    LAST_ERROR.with(|e| *e.borrow_mut() = message);
+}
+
+/// Runs `f`, turning `Err` and panics into `fail` plus a stored error message.
+fn guard<T>(fail: T, f: impl FnOnce() -> Result<T, String>) -> T {
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(Ok(value)) => value,
+        Ok(Err(message)) => {
+            set_error(message);
+            fail
+        }
+        Err(panic) => {
+            let message = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "panic".into());
+            set_error(format!("panic: {message}"));
+            fail
+        }
+    }
+}
+
+/// Controller state in XInput's layout.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MgskControls {
+    pub buttons: u16,
+    pub left_trigger: u8,
+    pub right_trigger: u8,
+    pub left: [i16; 2],
+    pub right: [i16; 2],
+}
+
+/// Static string identifying this build. Never null.
+#[unsafe(no_mangle)]
+pub extern "C" fn mgsk_version() -> *const c_char {
+    VERSION.as_ptr()
+}
+
+/// Message for the last failure on this thread. Never null; empty if none.
+#[unsafe(no_mangle)]
+pub extern "C" fn mgsk_last_error() -> *const c_char {
+    LAST_ERROR.with(|e| e.borrow().as_ptr())
+}
+
+/// Loads the converted Skate 3 data from `assets_dir` and builds a world from
+/// `triangle_count` triangles (9 floats each, in the engine's space). Null on failure.
+///
+/// # Safety
+/// `assets_dir` is a NUL-terminated UTF-8 path; `triangles` points at `triangle_count * 9` floats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_session_new(
+    assets_dir: *const c_char,
+    triangles: *const f32,
+    triangle_count: u32,
+    spawn: *const f32,
+    heading: f32,
+) -> *mut Session {
+    guard(std::ptr::null_mut(), || {
+        if assets_dir.is_null() || spawn.is_null() {
+            return Err("null argument".into());
+        }
+        let root = path_from(assets_dir)?;
+        let tris = triangles_from(triangles, triangle_count)?;
+        let spawn = unsafe { [*spawn, *spawn.add(1), *spawn.add(2)] };
+        let session = Session::new(&root, tris, Vec::new(), spawn, heading)?;
+        Ok(Box::into_raw(Box::new(session)))
+    })
+}
+
+/// # Safety
+/// `session` came from `mgsk_session_new` and is not used afterwards. Null is ignored.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_session_free(session: *mut Session) {
+    if !session.is_null() {
+        guard((), || {
+            drop(unsafe { Box::from_raw(session) });
+            Ok(())
+        });
+    }
+}
+
+fn triangles_from(triangles: *const f32, count: u32) -> Result<Vec<[[f32; 3]; 3]>, String> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    if triangles.is_null() {
+        return Err("null triangles".into());
+    }
+    let flat = unsafe { std::slice::from_raw_parts(triangles, count as usize * 9) };
+    Ok(flat
+        .chunks_exact(9)
+        .map(|t| [[t[0], t[1], t[2]], [t[3], t[4], t[5]], [t[6], t[7], t[8]]])
+        .collect())
+}
+
+/// Replaces the world the skater rides with `triangle_count` triangles (9 floats each).
+/// Builds on the calling thread; takes effect from the next tick. 0 on success.
+///
+/// # Safety
+/// `session` is a live session not used concurrently; `triangles` points at `triangle_count * 9` floats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_install_world(session: *mut Session, triangles: *const f32, triangle_count: u32) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_mut() }.ok_or("null session")?;
+        let prepared = session
+            .collision_builder()
+            .build(triangles_from(triangles, triangle_count)?, Vec::new())?;
+        session.install_collision(prepared)?;
+        Ok(0)
+    })
+}
+
+fn path_from(path: *const c_char) -> Result<PathBuf, String> {
+    if path.is_null() {
+        return Err("null path".into());
+    }
+    Ok(PathBuf::from(unsafe { CStr::from_ptr(path) }.to_str().map_err(|e| e.to_string())?))
+}
+
+/// The solid triangles of an MGS3 `.geom` file, in millimetres on the game's axes.
+fn read_geom(path: *const c_char) -> Result<Vec<geom::Triangle>, String> {
+    let path = path_from(path)?;
+    let data = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(geom::decode(&data).map_err(|e| format!("{}: {e}", path.display()))?.triangles)
+}
+
+fn count_i32(n: usize) -> Result<i32, String> {
+    i32::try_from(n).map_err(|_| format!("{n} triangles do not fit an int"))
+}
+
+/// Replaces the world the skater rides with the solid collision of an MGS3 `.geom` file,
+/// every coordinate (mm, game axes) multiplied by `units_per_mm`. Builds on the calling
+/// thread; takes effect from the next tick. Returns the triangle count, or -1 on failure.
+///
+/// # Safety
+/// `session` is a live session not used concurrently; `geom_path` is a NUL-terminated UTF-8 path.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_install_geom(session: *mut Session, geom_path: *const c_char, units_per_mm: f32) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_mut() }.ok_or("null session")?;
+        if !(units_per_mm.is_finite() && units_per_mm > 0.) {
+            return Err(format!("bad units_per_mm {units_per_mm}"));
+        }
+        let mut tris = read_geom(geom_path)?;
+        for c in tris.iter_mut().flatten().flatten() {
+            *c *= units_per_mm;
+        }
+        let count = count_i32(tris.len())?;
+        let prepared = session.collision_builder().build(tris, Vec::new())?;
+        session.install_collision(prepared)?;
+        Ok(count)
+    })
+}
+
+/// Number of solid triangles in an MGS3 `.geom` file, or -1 on failure. Decodes only.
+///
+/// # Safety
+/// `geom_path` is a NUL-terminated UTF-8 path.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_geom_triangle_count(geom_path: *const c_char) -> i32 {
+    guard(-1, || count_i32(read_geom(geom_path)?.len()))
+}
+
+/// Writes up to `capacity` solid triangles of an MGS3 `.geom` file (9 floats each, mm, game
+/// axes) to `out` and returns the total count, or -1 on failure. For tests and debugging.
+///
+/// # Safety
+/// `geom_path` is a NUL-terminated UTF-8 path; `out` has room for `capacity * 9` floats
+/// (may be null when `capacity` is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_geom_triangles(geom_path: *const c_char, out: *mut f32, capacity: u32) -> i32 {
+    guard(-1, || {
+        let tris = read_geom(geom_path)?;
+        let n = tris.len().min(capacity as usize);
+        if n > 0 {
+            if out.is_null() {
+                return Err("null out".into());
+            }
+            let flat = tris[..n].as_flattened().as_flattened();
+            unsafe { std::ptr::copy_nonoverlapping(flat.as_ptr(), out, flat.len()) };
+        }
+        count_i32(tris.len())
+    })
+}
+
+/// Seconds per engine tick, or -1 on failure.
+///
+/// # Safety
+/// `session` is a live session.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_period(session: *const Session) -> f32 {
+    guard(-1.0, || Ok(unsafe { session.as_ref() }.ok_or("null session")?.period()))
+}
+
+/// Puts the skater on the board at `position` (3 floats) facing `heading` radians. 0 on success.
+///
+/// # Safety
+/// `session` is a live session; `position` points at 3 floats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_activate(session: *mut Session, position: *const f32, heading: f32) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_mut() }.ok_or("null session")?;
+        if position.is_null() {
+            return Err("null position".into());
+        }
+        let p = unsafe { [*position, *position.add(1), *position.add(2)] };
+        session.activate(p, heading)?;
+        Ok(0)
+    })
+}
+
+/// Advances one engine tick with this controller state. 0 on success.
+///
+/// # Safety
+/// `session` is a live session; `controls` points at one `MgskControls`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_tick(session: *mut Session, controls: *const MgskControls) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_mut() }.ok_or("null session")?;
+        let c = unsafe { controls.as_ref() }.ok_or("null controls")?;
+        session.tick(Controls {
+            buttons: c.buttons,
+            triggers: [c.left_trigger, c.right_trigger],
+            left: c.left,
+            right: c.right,
+        })?;
+        Ok(0)
+    })
+}
+
+/// Writes the skater root transform (16 floats, column-major) to `out`. 0 on success.
+///
+/// # Safety
+/// `session` is a live session; `out` has room for 16 floats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_root(session: *const Session, out: *mut f32) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_ref() }.ok_or("null session")?;
+        if out.is_null() {
+            return Err("null out".into());
+        }
+        let m = session.pose().root.to_cols_array();
+        unsafe { std::ptr::copy_nonoverlapping(m.as_ptr(), out, 16) };
+        Ok(0)
+    })
+}

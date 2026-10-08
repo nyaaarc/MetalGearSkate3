@@ -1,0 +1,19 @@
+[package]
+name = "skate-ffi"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+description = "C interface to the Skate 3 Rust engine, for hosting it inside MGS3"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+skate-host = { path = "../mashup/skate/crates/skate-host" }
+
+[profile.release]
+lto = "thin"
+
+# Standalone: not part of the engine's workspace.
+[workspace]
