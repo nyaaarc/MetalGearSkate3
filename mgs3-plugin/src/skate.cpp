@@ -385,7 +385,7 @@ DWORD WINAPI run(LPVOID) {
   const auto floor_fn = reinterpret_cast<decltype(&mgsk_floor_below)>(GetProcAddress(g_ffi_module, "mgsk_floor_below"));
   if (!floor_fn) log("skate: skate_ffi.dll has no mgsk_floor_below; only deep falls are caught");
   float snake_bones[pose::kSnakeBones * 16];
-  bool stealth_enabled = ini_string("stealth_while_skating", "1") != "0";
+  bool stealth_enabled = ini_string("stealth_while_skating", "0") != "0";
   Stealth stealth;
   const float period = f.period(session);
   log("skate: engine ready in %lu ms (tick %.4f s). F5 toggles skating.", GetTickCount() - started, period);
