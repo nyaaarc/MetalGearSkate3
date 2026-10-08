@@ -73,6 +73,25 @@ bool is_snake(const uint8_t* obj, const float origin[3], bool& relative) {
   return best < kMaxDistanceMm * kMaxDistanceMm;
 }
 
+// Snake's render object, once seen near him, and its translation's offset from his gameplay
+// position (in the space the object stores it). Guarded by g_mutex.
+const uint8_t* g_snake_obj = nullptr;
+float g_snake_offset[3] = {0, 0, 0};
+
+// While he's posed (skating) off the game's own floor, MGS3 keeps moving his render object (it
+// sinks steadily on s091a's out-of-bounds strip) though we hold his gameplay position; tens of
+// metres down it is culled and he vanishes. Put the object back on his gameplay position before
+// the pass builds his bones from it. Caller holds g_mutex.
+void hold_snake_object(uint8_t* obj, const float origin[3], bool relative) {
+  const game::Vec3* snake = game::snake_position();
+  if (!snake) return;
+  float t[3] = {snake->x + g_snake_offset[0], snake->y + g_snake_offset[1], snake->z + g_snake_offset[2]};
+  if (relative) {
+    for (int i = 0; i < 3; ++i) t[i] -= origin[i];
+  }
+  memcpy(obj + kObjTranslation, t, sizeof(t));
+}
+
 void __fastcall on_bone_pass(uint8_t* obj, void* arg2) {
   g_calls.fetch_add(1, std::memory_order_relaxed);
   int count = 0;
@@ -83,7 +102,23 @@ void __fastcall on_bone_pass(uint8_t* obj, void* arg2) {
     float origin[3] = {0, 0, 0};
     render_origin(origin);
     bool relative = false;
-    if (is_snake(obj, origin, relative)) {
+    const bool close_by = is_snake(obj, origin, relative);
+    if (close_by && !g_active) {
+      // Remember which object is Snake and where it sits relative to him (not while posing, so
+      // a held object doesn't feed its own offset back).
+      const game::Vec3* snake = game::snake_position();
+      float t[3];
+      memcpy(t, obj + kObjTranslation, sizeof(t));
+      g_snake_obj = obj;
+      g_snake_offset[0] = t[0] + (relative ? origin[0] : 0) - snake->x;
+      g_snake_offset[1] = t[1] + (relative ? origin[1] : 0) - snake->y;
+      g_snake_offset[2] = t[2] + (relative ? origin[2] : 0) - snake->z;
+    }
+    if (g_active && obj == g_snake_obj) {
+      hold_snake_object(obj, origin, g_relative.load(std::memory_order_relaxed) == 1);
+      relative = g_relative.load(std::memory_order_relaxed) == 1;
+    }
+    if (close_by || (g_active && obj == g_snake_obj)) {
       g_relative.store(relative ? 1 : 0, std::memory_order_relaxed);
       // Snake's bones for this frame, as the game computed them (the renderer matches his
       // palette slots against them). Overwriting them here has no visible effect: the GPU
