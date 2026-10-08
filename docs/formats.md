@@ -188,6 +188,31 @@ analogues to find, guided by the MGS2 patterns and the GirianSeed decomp.
   - `48 8B 05 ?? ?? ?? ?? 0F BF 4B F8 0F BF 50 42 E8` (disp at +3) → `exe+1E16CD8`,
     pointer to Snake's movement block (`pos-0x10`). The plugin uses this one (`game.cpp`).
 
+### Stage loading (how the developer menu does it)
+
+- `GM_SetArea(int id, const char* name)`: `id` is `StrCode` (24-bit rotate-5-and-add) of the
+  *previous* area, normally `GM_SaveArea` (link-variable buffer `+0x10`): `select` = 8888768,
+  `s091a` = 4778632, `s092b` = 4778665.
+- A developer-menu stage load does not call `GM_SetArea` itself. It queues the load (GM_Result
+  9999, `GM_LoadRequest` 16) and the game loop at `exe+9D8B0` calls `GM_SetArea(GM_SaveArea,
+  name)` (call site `exe+9D945`, logged as "called from exe+9D94A"), taking `name` from the
+  GCL scenario stream (`exe+E4D90` reads the stream pointer at `[rip+0x1D47505]` and parses an
+  entry with `exe+E4E60`, which also yields extra values, probably the entry's start point).
+  `GCL_ChangeSenerioCode(StrCode("scenerio"))` runs once, when entering stage select.
+- The stage list's `[+]` entries hold variants that set the story state: e.g. `s092a[+]` has
+  `(s092a_0)`, `(s092a)Night`, `(s092b)Night`, `(s092c)Morning`, `back`. A variant writes about 240
+  values into the first ~2 KiB of the link-variable buffer (item counts 999, flags, time of day)
+  and picks where Snake starts.
+- The harness's direct load (`game::load_stage_now`: `GM_SetArea` + `GCL_ChangeSenerioCode` +
+  request 16) skips that. On a fresh launch it has no story state: s092a/s092b put Snake at
+  (-306, -97062, 244), under the stage (instant game over), and s091a starts with a scripted
+  run-in that never ends (he runs into the trench wall, ignoring the pad). After a menu load the
+  state persists, so later direct loads start differently (s092b on the floor; s091a in the
+  escape sequence's run-in at (17339, 800, -37146)). Writing the menu's 2 KiB of state back
+  before a direct load does not fix the spawn, so the start point is set elsewhere (the scenario
+  stream entry). Link-variable `+1636/+1640/+1644` (int32 x, y, z) track Snake's live position;
+  they are not the spawn input.
+
 ## `.geom` (collision) — decoded, reader `tools/geom.py`
 
 Stages load geom via `<lang>/stage/<stage>/manifest.txt` (`s001a` → `assets/geom/us/c001b.geom`,

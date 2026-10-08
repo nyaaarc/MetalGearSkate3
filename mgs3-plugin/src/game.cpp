@@ -1,6 +1,7 @@
 #include "game.hpp"
 
 #include <windows.h>
+#include <intrin.h>
 #include <psapi.h>
 
 #include <atomic>
@@ -81,8 +82,11 @@ void __fastcall on_set_area(int id, const char* dirname) {
   short result = 0;
   int load_request = g_load_request ? *g_load_request : -1;
   if (g_linkvarbuf && *g_linkvarbuf) memcpy(&result, *g_linkvarbuf + 2, sizeof(result));
-  log("game: GM_SetArea(id %d, \"%s\") GM_Result %d load_request %d", id, dirname ? dirname : "(null)", result,
-      load_request);
+  // The caller tells a menu load (the game loop at exe+9D8B0 on MC 3.0.0, which takes the stage
+  // name from the scenario stream) from ours (game::load_stage_now) and MGSHDFix's.
+  const auto caller = reinterpret_cast<uint8_t*>(_ReturnAddress()) - reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
+  log("game: GM_SetArea(id %d, \"%s\") GM_Result %d load_request %d, called from exe+%llX", id,
+      dirname ? dirname : "(null)", result, load_request, static_cast<unsigned long long>(caller));
   g_set_area_hook.call<void>(id, dirname);
 }
 
