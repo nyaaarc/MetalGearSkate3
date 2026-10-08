@@ -4,6 +4,7 @@
 #include <psapi.h>
 
 #include <atomic>
+#include <deque>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -96,7 +97,7 @@ struct Injection {
   uint8_t sticks[4] = {0x80, 0x80, 0x80, 0x80};  // RX RY LX LY
   int frames = 0;
 };
-Injection g_inject;  // guarded by g_pad_mutex
+std::deque<Injection> g_inject;  // guarded by g_pad_mutex; front plays first
 
 void __fastcall on_pad_copy(uint8_t* dst, uint8_t* src) {
   if (src == g_pads) {  // pad 0
@@ -106,11 +107,13 @@ void __fastcall on_pad_copy(uint8_t* dst, uint8_t* src) {
         load_stage_now(g_pending_stage);
         g_pending_stage[0] = 0;
       }
-      if (g_inject.frames > 0) {
-        --g_inject.frames;
-        memcpy(src + 4, &g_inject.buttons, sizeof(uint16_t));
-        memcpy(src + kSrcSticks, g_inject.sticks, 4);
-        memcpy(src + kSrcSticks2, g_inject.sticks, 4);
+      while (!g_inject.empty() && g_inject.front().frames <= 0) g_inject.pop_front();
+      if (!g_inject.empty()) {
+        Injection& step = g_inject.front();
+        --step.frames;
+        memcpy(src + 4, &step.buttons, sizeof(uint16_t));
+        memcpy(src + kSrcSticks, step.sticks, 4);
+        memcpy(src + kSrcSticks2, step.sticks, 4);
       }
       memcpy(&g_pad_copy, src, sizeof(Pad));
       g_pad_seen = true;
@@ -235,7 +238,8 @@ void block_input(bool blocked) { g_block_input = blocked; }
 
 void inject_pad(uint16_t buttons, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry, int frames) {
   std::lock_guard lock(g_pad_mutex);
-  g_inject = {buttons, {rx, ry, lx, ly}, frames};
+  g_inject.clear();
+  if (frames > 0) g_inject.push_back({buttons, {rx, ry, lx, ly}, frames});
 }
 
 bool request_stage(const char* name) {
@@ -246,9 +250,16 @@ bool request_stage(const char* name) {
   return true;
 }
 
+void queue_pad(uint16_t buttons, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry, int frames) {
+  std::lock_guard lock(g_pad_mutex);
+  if (frames > 0) g_inject.push_back({buttons, {rx, ry, lx, ly}, frames});
+}
+
 int injected_frames_left() {
   std::lock_guard lock(g_pad_mutex);
-  return g_inject.frames;
+  int left = 0;
+  for (const Injection& step : g_inject) left += step.frames;
+  return left;
 }
 
 const char* current_stage() { return g_stage; }

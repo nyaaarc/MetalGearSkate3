@@ -42,6 +42,8 @@ struct Ffi {
   decltype(&mgsk_last_error) last_error;
   decltype(&mgsk_retarget_init) retarget_init;
   decltype(&mgsk_snake_pose) snake_pose;
+  decltype(&mgsk_state) state;
+  decltype(&mgsk_rail_count) rail_count;
 };
 
 // From skate_ffi.dll when it has the .geom reader: decodes and installs a stage's collision,
@@ -118,7 +120,8 @@ bool load_ffi(Ffi& f) {
   return bind(f.session_new, "mgsk_session_new") && bind(f.install_world, "mgsk_install_world") &&
          bind(f.period, "mgsk_period") && bind(f.activate, "mgsk_activate") && bind(f.tick, "mgsk_tick") &&
          bind(f.root, "mgsk_root") && bind(f.last_error, "mgsk_last_error") &&
-         bind(f.retarget_init, "mgsk_retarget_init") && bind(f.snake_pose, "mgsk_snake_pose");
+         bind(f.retarget_init, "mgsk_retarget_init") && bind(f.snake_pose, "mgsk_snake_pose") &&
+         bind(f.state, "mgsk_state") && bind(f.rail_count, "mgsk_rail_count");
 }
 
 // The stage's collision file, from the first `.geom` entry in its manifest. The manifests sit
@@ -359,6 +362,7 @@ DWORD WINAPI run(LPVOID) {
               world_ok = true;
               collision_stage = stage;
               st.collision_triangles = count;
+              st.rails = f.rail_count(session);
               log("skate: %s collision from %s: %d triangles in %lu ms", stage.c_str(),
                   geom->filename().string().c_str(), count, GetTickCount() - t0);
             } else {
@@ -427,6 +431,11 @@ DWORD WINAPI run(LPVOID) {
     }
     publish_pose(pose_fn && pose_fn(session, pose, kBoardBodies) == kBoardBodies ? pose : nullptr,
                  have_camera ? camera : nullptr);
+    {
+      const float dx = m[12] - st.skater[0], dz = m[14] - st.skater[2];
+      st.speed_mps = std::sqrt(dx * dx + dz * dz) / period;
+      if (f.state(session, st.engine_state, sizeof(st.engine_state)) != 0) st.engine_state[0] = 0;
+    }
     st.skater[0] = m[12];
     st.skater[1] = m[13];
     st.skater[2] = m[14];

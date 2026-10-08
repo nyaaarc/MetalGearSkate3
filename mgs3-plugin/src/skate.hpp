@@ -22,6 +22,9 @@ struct Status {
   bool skating = false;
   float skater[3] = {};  // engine units (m)
   float heading_deg = 0;
+  float speed_mps = 0;     // horizontal speed of the skater root
+  char engine_state[48] = {};  // engine state name (riding / air / grind / bail ...)
+  int rails = -1;          // grind rails installed with the stage collision
   int collision_triangles = -1;  // -1 = flat floor / none
 };
 Status status();

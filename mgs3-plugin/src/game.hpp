@@ -59,6 +59,8 @@ bool request_stage(const char* name);
 // Test harness: replace pad 0 with this state for the next `frames` game frames (before the
 // plugin reads it and before blocking), as if a controller were held. 0 frames cancels.
 void inject_pad(uint16_t buttons, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry, int frames);
+// Append a step after the currently queued ones (frame-exact sequences such as flick tricks).
+void queue_pad(uint16_t buttons, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry, int frames);
 int injected_frames_left();
 
 // The game's link-variable (save/state) buffer, or nullptr before init / outside gameplay.

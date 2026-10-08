@@ -67,6 +67,35 @@ std::string run(const std::string& line) {
                      static_cast<uint8_t>(ry), frames);
     return "ok";
   }
+  if (verb == "seq") {
+    // seq <buttons> <lx> <ly> <rx> <ry> <frames> ; <buttons> ... ; ...   (plays back to back)
+    std::string rest;
+    std::getline(in, rest);
+    std::stringstream steps(rest);
+    game::inject_pad(0, 128, 128, 128, 128, 0);
+    int count = 0;
+    for (std::string step; std::getline(steps, step, ';');) {
+      std::stringstream fields(step);
+      std::string buttons;
+      int lx, ly, rx, ry, frames;
+      uint16_t mask;
+      if (!(fields >> buttons >> lx >> ly >> rx >> ry >> frames) || !parse_buttons(buttons, mask)) {
+        return "error: bad step " + std::to_string(count + 1) + ": usage <buttons> <lx> <ly> <rx> <ry> <frames>";
+      }
+      game::queue_pad(mask, static_cast<uint8_t>(lx), static_cast<uint8_t>(ly), static_cast<uint8_t>(rx),
+                      static_cast<uint8_t>(ry), frames);
+      ++count;
+    }
+    return "ok " + std::to_string(count) + " steps";
+  }
+  if (verb == "teleport") {
+    float x, y, z;
+    if (!(in >> x >> y >> z)) return "error: usage teleport <x> <y> <z> (mm, Snake's waist position)";
+    game::Vec3* snake = game::snake_position();
+    if (!snake) return "error: no player";
+    *snake = {x, y, z};
+    return "ok";
+  }
   if (verb == "release") {
     game::inject_pad(0, 128, 128, 128, 128, 0);
     return "ok";
@@ -123,11 +152,11 @@ void write_state() {
   const char* stage = game::current_stage();
   const game::Vec3* snake = game::snake_position();
   const int16_t* yaw = game::snake_yaw();
-  char json[1024];
+  char json[1536];
   snprintf(json, sizeof(json),
            "{\"tick_ms\": %lu, \"stage\": \"%s\", \"snake\": %s, \"snake_yaw\": %d,\n"
            " \"engine_ready\": %s, \"skating\": %s, \"skater_m\": [%.3f, %.3f, %.3f], \"skater_heading_deg\": %.1f,"
-           " \"collision_triangles\": %d,\n"
+           " \"speed_mps\": %.2f, \"engine_state\": \"%s\", \"collision_triangles\": %d, \"rails\": %d,\n"
            " \"pad\": {\"seen\": %s, \"buttons\": \"0x%04X\", \"lx\": %u, \"ly\": %u, \"rx\": %u, \"ry\": %u},"
            " \"injected_frames_left\": %d,\n"
            " \"render\": {\"hooked\": %s, \"presents\": %llu, \"drawn\": %llu, \"width\": %u, \"height\": %u}}\n",
@@ -136,7 +165,7 @@ void write_state() {
                     std::to_string(snake->z) + "]").c_str()
                  : "null",
            yaw ? *yaw : 0, sk.ready ? "true" : "false", sk.skating ? "true" : "false", sk.skater[0], sk.skater[1],
-           sk.skater[2], sk.heading_deg, sk.collision_triangles, have_pad ? "true" : "false", pad.buttons,
+           sk.skater[2], sk.heading_deg, sk.speed_mps, sk.engine_state, sk.collision_triangles, sk.rails, have_pad ? "true" : "false", pad.buttons,
            pad.left_x, pad.left_y, pad.right_x, pad.right_y, game::injected_frames_left(),
            rd.hooked ? "true" : "false", static_cast<unsigned long long>(rd.presents),
            static_cast<unsigned long long>(rd.drawn), rd.width, rd.height);

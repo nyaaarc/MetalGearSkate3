@@ -12,6 +12,9 @@
 //   pad <buttons> <lx> <ly> <rx> <ry> <frames>   hold a virtual pad state (PS2 button names
 //                                                joined with +, or a hex mask; sticks 0..255,
 //                                                128 centre, up = 0)
+//   seq <step> ; <step> ; ...                    play pad states back to back, frame-exact
+//                                                (each step: buttons lx ly rx ry frames)
+//   teleport <x> <y> <z>                         move Snake (mm, his waist position; floor + 800)
 //   release                                      cancel any held virtual pad state
 //   skate on | skate off                         same as pressing F5
 //   stage <code>                                 load a stage directly (e.g. s091a; "select" =
