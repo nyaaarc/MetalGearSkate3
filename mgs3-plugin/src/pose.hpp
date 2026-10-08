@@ -30,6 +30,12 @@ bool current(float* bones);
 // origin. False before Snake is seen.
 bool game_bones(float* bones, float origin[3], float object[16], bool& relative);
 
+// Snake's bones from the last few bone passes, newest first (the palette the GPU gets can lag
+// the latest pass by a frame or two while he animates): up to `max` sets of kSnakeBones * 16
+// floats and their render object matrices. Returns how many were written.
+constexpr int kBoneHistory = 4;
+int game_bone_history(float (*bones)[kSnakeBones * 16], float (*objects)[16], int max);
+
 // From the renderer: palette slots rewritten with the pose / Snake draws seen this frame.
 void count_applied(uint64_t slots, uint64_t draws);
 

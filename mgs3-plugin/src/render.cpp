@@ -1144,10 +1144,12 @@ void load_rest(const std::filesystem::path& mdl) {
 // Per frame (guarded by g_cap_mutex): the game's and our bones, and the slot -> bone cache.
 struct SkinFrame {
   int state = 0;  // 0 not fetched, 1 ready, -1 nothing to do this frame
-  float game[kSnakeBones * 16];
+  float game[pose::kBoneHistory][kSnakeBones * 16];  // the last few passes, newest first
+  Vec origin[pose::kBoneHistory];                     // each pass's render object translation, O
+  int passes = 0;
   float ours[kSnakeBones * 16];
-  Vec origin;  // the render object's translation, O
-  std::vector<std::pair<uint64_t, int>> slots;  // slot content hash -> bone (-1 = not Snake's)
+  // slot content hash -> bone + kSnakeBones * pass (-1 = not Snake's)
+  std::vector<std::pair<uint64_t, int>> slots;
   uint64_t posed = 0, draws = 0;
 };
 SkinFrame g_skin;
@@ -1159,23 +1161,37 @@ uint64_t hash_slot(const float* f) {
   return h;
 }
 
-// The bone whose inverse-bind matrix relative to O is `slot` (3 rows of 4), or -1.
-int match_bone(const float* slot, const float* bones, Vec origin) {
+// The bone whose inverse-bind matrix relative to O is closest to `slot` (3 rows of 4), or -1.
+// Not exact: the game draws at 60 fps from 30 fps logic and blends bones between logic frames,
+// so while Snake animates his palette lies between two passes' bones. Rotation picks the
+// candidates; the rest-adjusted translation (bones sit centimetres apart) picks among them.
+// `err` returns the match's error (rotation sum + translation mm / 100) for choosing between passes.
+int match_bone(const float* slot, const float* bones, Vec origin, float& err) {
+  constexpr float kMaxRot = 0.6f;     // sum of |differences| over the 9 rotation entries
+  constexpr float kMaxMoveMm = 60.f;  // largest translation difference per axis
+  int best = -1;
+  err = 1e30f;
+  const float o[3] = {origin.x, origin.y, origin.z};
   for (int b = 0; b < kSnakeBones; ++b) {
     const float* m = bones + b * 16;  // rows: X, Y, Z axis, translation
-    bool ok = true;
-    for (int r = 0; r < 3 && ok; ++r) {
-      for (int c = 0; c < 3 && ok; ++c) ok = std::fabs(slot[r * 4 + c] - m[c * 4 + r]) < 1e-3f;
+    float rot = 0;
+    for (int r = 0; r < 3; ++r) {
+      for (int c = 0; c < 3; ++c) rot += std::fabs(slot[r * 4 + c] - m[c * 4 + r]);
     }
-    if (!ok) continue;
-    const float o[3] = {origin.x, origin.y, origin.z};
-    for (int r = 0; r < 3 && ok; ++r) {
+    if (rot > kMaxRot) continue;
+    float move = 0;
+    for (int r = 0; r < 3; ++r) {
       const float t = m[12 + r] - o[r] - (m[0 * 4 + r] * g_rest[b][0] + m[1 * 4 + r] * g_rest[b][1] + m[2 * 4 + r] * g_rest[b][2]);
-      ok = std::fabs(slot[r * 4 + 3] - t) < 1.f;
+      move = std::max(move, std::fabs(slot[r * 4 + 3] - t));
     }
-    if (ok) return b;
+    if (move > kMaxMoveMm) continue;
+    const float e = rot + move / 100.f;
+    if (e < err) {
+      err = e;
+      best = b;
+    }
   }
-  return -1;
+  return best;
 }
 
 // Rewrites Snake's palette in a $Globals image with the published pose; true if this draw was
@@ -1186,10 +1202,10 @@ bool pose_snake(uint8_t* globals) {
   Vec d;
   if (!main_camera_draw(globals, pers, d) || dot(d, d) < 1.f) return false;  // skinned draws only
   if (g_skin.state == 0) {
-    float origin[3], object[16];
-    bool relative = false;
-    g_skin.state = pose::current(g_skin.ours) && pose::game_bones(g_skin.game, origin, object, relative) ? 1 : -1;
-    g_skin.origin = {object[12], object[13], object[14]};
+    float objects[pose::kBoneHistory][16];
+    g_skin.passes = pose::current(g_skin.ours) ? pose::game_bone_history(g_skin.game, objects, pose::kBoneHistory) : 0;
+    for (int k = 0; k < g_skin.passes; ++k) g_skin.origin[k] = {objects[k][12], objects[k][13], objects[k][14]};
+    g_skin.state = g_skin.passes > 0 ? 1 : -1;
     if (g_skin.state < 0) return false;
   }
   // No check of the draw's own origin: some of Snake's draws (about 22 a frame, ~640 mm above his
@@ -1208,12 +1224,24 @@ bool pose_snake(uint8_t* globals) {
       }
     }
     if (bone == -2) {
-      bone = match_bone(slot, g_skin.game, g_skin.origin);
+      // While he animates, the palette may come from a pass a frame or two before the latest.
+      bone = -1;
+      float best = 1e30f;
+      for (int k = 0; k < g_skin.passes; ++k) {
+        float e;
+        const int b = match_bone(slot, g_skin.game[k], g_skin.origin[k], e);
+        if (b >= 0 && e < best) {
+          best = e;
+          bone = b + kSnakeBones * k;
+        }
+      }
       g_skin.slots.emplace_back(h, bone);
     }
     if (bone < 0) continue;
+    const int pass = bone / kSnakeBones;
+    bone %= kSnakeBones;
     const float* m = g_skin.ours + bone * 16;
-    const float o[3] = {g_skin.origin.x, g_skin.origin.y, g_skin.origin.z};
+    const float o[3] = {g_skin.origin[pass].x, g_skin.origin[pass].y, g_skin.origin[pass].z};
     for (int r = 0; r < 3; ++r) {
       for (int c = 0; c < 3; ++c) slot[r * 4 + c] = m[c * 4 + r];
       slot[r * 4 + 3] = m[12 + r] - o[r] -

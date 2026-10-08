@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -36,6 +37,10 @@ float g_game_bones[kSnakeBones * 16];  // guarded by g_mutex: Snake's bones as t
 float g_game_origin[3];
 float g_game_object[16];  // obj+0x20, the render object's world matrix
 bool g_game_relative = false, g_game_valid = false;
+// Ring of recent passes (guarded by g_mutex): g_hist_next is the slot the next pass writes.
+float g_hist_bones[kBoneHistory][kSnakeBones * 16];
+float g_hist_object[kBoneHistory][16];
+int g_hist_count = 0, g_hist_next = 0;
 std::atomic<uint64_t> g_calls{0}, g_applied{0}, g_draws{0};
 std::atomic<int> g_last_count{0};
 
@@ -91,6 +96,10 @@ void __fastcall on_bone_pass(uint8_t* obj, void* arg2) {
         memcpy(g_game_object, obj + kObjMatrix, sizeof(g_game_object));
         g_game_relative = relative;
         g_game_valid = true;
+        memcpy(g_hist_bones[g_hist_next], bones, sizeof(g_hist_bones[0]));
+        memcpy(g_hist_object[g_hist_next], obj + kObjMatrix, sizeof(g_hist_object[0]));
+        g_hist_next = (g_hist_next + 1) % kBoneHistory;
+        g_hist_count = std::min(g_hist_count + 1, kBoneHistory);
       }
     }
   }
@@ -138,6 +147,17 @@ bool game_bones(float* bones, float origin[3], float object[16], bool& relative)
   memcpy(object, g_game_object, sizeof(g_game_object));
   relative = g_game_relative;
   return true;
+}
+
+int game_bone_history(float (*bones)[kSnakeBones * 16], float (*objects)[16], int max) {
+  std::lock_guard lock(g_mutex);
+  const int n = std::min(max, g_hist_count);
+  for (int i = 0; i < n; ++i) {
+    const int at = (g_hist_next - 1 - i + kBoneHistory) % kBoneHistory;
+    memcpy(bones[i], g_hist_bones[at], sizeof(g_hist_bones[0]));
+    memcpy(objects[i], g_hist_object[at], sizeof(g_hist_object[0]));
+  }
+  return n;
 }
 
 Stats stats() {
