@@ -52,8 +52,10 @@ The stage's real collision is loaded on F5; the board is drawn in flat colours, 
 - The plugin finds Snake by signature on every launch and reads his real position (writing it
   moves him in game). Camera look-at/eye and Snake's skeleton are mapped (`docs/formats.md`).
 
-- Skating in game: F5 hands Snake to the Skate 3 engine (push, carve, brake on the stick) using the
-  game's own pad state, so any Steam Input controller works; Snake faces the direction of travel.
+- Skating in game: F5 hands Snake to the Skate 3 engine using the game's own pad state, so any
+  Steam Input controller works. Checked in game (run 15, s091a): pushes build 2.7, 4.9, 7.6 m/s;
+  ollie, kickflip, heelflip and nollie leave the ground (~1 m) and land; carving and braking work.
+  Snake is posed from the skater on the board, and the board hides behind the scene and his legs.
 - Stage collision: `.geom` decoded (`tools/geom.py`, Rust `skate-ffi/src/geom.rs`, identical output);
   the current stage's collision is loaded into the engine on F5.
 - Riding off the stage puts the skater back where he last rode (Snake would otherwise fall to his death).
@@ -80,8 +82,9 @@ The stage's real collision is loaded on F5; the board is drawn in flat colours, 
 ## What's missing
 
 - A stable lookup for the camera and skeleton
-- Feeding MGS3 collision to the skate world; Snake's gear (separate model) still follows the game's own animation while skating
-- Drawing the board in game: flat colours only; scene occlusion (a copy of the scene's depth buffer) is untested in game
+- Grinds and bails not yet confirmed in game
+- Snake's gear (separate model) still follows the game's own animation while skating
+- Drawing the board in game: flat colours only
 - Setup (finding MGS3, converting your Skate 3 files), settings menu, audio
 
 ## Credits
