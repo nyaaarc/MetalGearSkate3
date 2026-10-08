@@ -408,3 +408,14 @@ texture (slots are the board materials in glTF order: 0 deck, 1 truck, 2 wheel) 
 `mgsk_board_texture` the decoded RGBA8; UVs are glTF's (0,0 = top-left texel), all within [0, 1].
 The plugin builds a box-filtered mip chain and samples them as UNORM (the game's back buffer is
 UNORM, gamma-space).
+
+### Snake's draws while skating (s091a, run 22)
+
+A dump of every $Globals write in one frame (`render palette now` now records all draws; ones
+that aren't main-camera skinned draws carry d = NaN) found nothing drawn within 2.5 m of Snake
+except his own 568 skinned main-camera draws: 546 on his object's origin and 22 on an origin
+~480 mm above it (head/hair/headband). All 568 use palettes whose slots match his 57 bones
+relative to his *object's* origin, including the 22; there are no separate rigid gear draws
+or a second skeleton. Static scenery draws have d = 0 and are placed by gVS_Mat0 (translation
+= world - L). No draw with Snake's bone rotations relative to origin 0 (an earlier dump's
+shadow-like draws) appeared in this frame.

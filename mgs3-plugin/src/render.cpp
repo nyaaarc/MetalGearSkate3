@@ -1052,7 +1052,10 @@ bool g_dump_relative = false, g_dump_have_bones = false;
 void dump_draw(const uint8_t* globals) {
   Mat pers;
   Vec d;
-  if (!main_camera_draw(globals, pers, d) || dot(d, d) < 1.f || g_dump.size() >= 1024) return;
+  // Every draw of the frame (main-camera skinned ones have d; others are recorded with d = NaN so
+  // rigid pieces, e.g. Snake's gear, whose world transform is folded into gVS_Pers, show up too).
+  if (g_dump.size() >= 4096) return;
+  if (!main_camera_draw(globals, pers, d)) d = {NAN, NAN, NAN};
   if (g_dump.empty()) {
     g_dump_have_bones = pose::game_bones(g_dump_bones, g_dump_origin, g_dump_object, g_dump_relative);
   }
@@ -1161,6 +1164,8 @@ struct SkinFrame {
   float game[pose::kBoneHistory][kSnakeBones * 16];  // the last few passes, newest first
   Vec origin[pose::kBoneHistory];                     // each pass's render object translation, O
   int passes = 0;
+  Vec body_origin;          // this frame's origin of his body draws (L + d), once one is seen
+  bool have_body = false;
   float ours[kSnakeBones * 16];
   // slot content hash -> bone + kSnakeBones * pass (-1 = not Snake's)
   std::vector<std::pair<uint64_t, int>> slots;
@@ -1261,7 +1266,15 @@ bool pose_snake(uint8_t* globals) {
     // snapshot's.
     Vec o_draw{g_L_frame.x + d.x, g_L_frame.y + d.y, g_L_frame.z + d.z};
     const Vec gap = o_draw - g_skin.origin[pass];
-    if (dot(gap, gap) > 300.f * 300.f) o_draw = g_skin.origin[pass];
+    if (dot(gap, gap) <= 300.f * 300.f) {
+      g_skin.body_origin = o_draw;
+      g_skin.have_body = true;
+    } else {
+      // His head, hair and headband: palettes relative to his object's origin, which the
+      // matched snapshot has from a frame or more ago (10-40 cm behind at riding speed); use
+      // this frame's, from his body draws.
+      o_draw = g_skin.have_body ? g_skin.body_origin : g_skin.origin[pass];
+    }
     const float o[3] = {o_draw.x, o_draw.y, o_draw.z};
     for (int r = 0; r < 3; ++r) {
       for (int c = 0; c < 3; ++c) slot[r * 4 + c] = m[c * 4 + r];
@@ -1278,6 +1291,7 @@ bool pose_snake(uint8_t* globals) {
 void end_skin_frame() {
   if (g_skin.posed || g_skin.draws) pose::count_applied(g_skin.posed, g_skin.draws);
   g_skin.state = 0;
+  g_skin.have_body = false;
   g_skin.slots.clear();
   g_skin.posed = g_skin.draws = 0;
 }

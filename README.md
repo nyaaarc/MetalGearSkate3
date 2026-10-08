@@ -108,7 +108,7 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 ## What's missing
 
 - A stable lookup for the camera and skeleton
-- Snake's gear (separate model) still follows the game's own animation while skating
+- A held weapon and Snake's shadow are unchecked while skating (his gear and head now follow the pose)
 - Board textures not yet checked in game (simple diffuse lighting, no specular)
 - Settings menu, audio
 - Setup is tested in dry runs and data-only runs (ISO → extract → convert → engine check); a full
