@@ -10,6 +10,9 @@ namespace camera {
 // Install the hook. Call once after game::init(). False if the signatures weren't found.
 bool init();
 
+// Removes the hook (core unload).
+void stop();
+
 // Drive the game camera from the skate camera (only has an effect while skating).
 void set_driving(bool on);
 bool driving();

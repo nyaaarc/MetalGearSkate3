@@ -89,7 +89,10 @@ void __fastcall on_bone_pass(uint8_t* obj, void* arg2) {
     float origin[3] = {0, 0, 0};
     render_origin(origin);
     bool relative = false;
-    if (is_snake(obj, origin, relative)) {
+    // His own render object, wherever it sits: frozen for skating it stays where he got on the
+    // board (a core loaded mid-ride never sees it near him). Else the one on his position.
+    const bool close_by = is_snake(obj, origin, relative);
+    if (obj == game::snake_render_object() || close_by) {
       g_relative.store(relative ? 1 : 0, std::memory_order_relaxed);
       // Snake's bones for this frame, as the game computed them (the renderer matches his
       // palette slots against them). Overwriting them here has no visible effect: the GPU
@@ -113,6 +116,12 @@ void __fastcall on_bone_pass(uint8_t* obj, void* arg2) {
 }
 
 }  // namespace
+
+void stop() {
+  g_hook.reset();
+  std::lock_guard lock(g_mutex);
+  g_active = false;
+}
 
 bool init() {
   uint8_t* site = game::find(kBonePassSig);

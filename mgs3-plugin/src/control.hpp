@@ -34,4 +34,7 @@ namespace control {
 
 void start(const std::filesystem::path& plugin_dir);
 
+// Stops and joins the command thread (core unload).
+void stop();
+
 }  // namespace control

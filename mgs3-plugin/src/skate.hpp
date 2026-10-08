@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core_api.hpp"
+
 #include <windows.h>
 
 #include <filesystem>
@@ -12,7 +14,13 @@
 // position and heading into Snake. Settings come from MetalGearSkate.ini beside the plugin.
 namespace skate {
 
-void start(const std::filesystem::path& plugin_dir, HMODULE ffi);
+// `shared` (the loader's) keeps the engine session across core reloads, and where Snake was
+// riding when the previous core stopped, to put him back on the board there.
+void start(const std::filesystem::path& plugin_dir, HMODULE ffi, core::CoreShared* shared);
+
+// Stops and joins the skate thread (core unload): the session goes back to `shared`, and a ride
+// in progress is recorded there to resume (Snake stays frozen in between).
+void stop();
 
 // Test harness: ask the skate thread to start (true) or stop (false) skating, as F5 would.
 void request(bool on);

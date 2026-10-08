@@ -102,9 +102,13 @@ uintptr_t read_target() {
   }
 }
 
+std::atomic<bool> g_stop{false};
+HANDLE g_thread = nullptr;
+PVOID g_handler = nullptr;
+
 DWORD WINAPI poll(LPVOID) {
   g_poll_thread = GetCurrentThreadId();
-  for (;;) {
+  while (!g_stop) {
     const uintptr_t wanted = std::filesystem::exists(g_file) ? read_target() : 0;
     const bool changed = wanted != g_armed.load();
     if (changed) {
@@ -121,14 +125,28 @@ DWORD WINAPI poll(LPVOID) {
     }
     // While armed, re-apply every poll so threads created since are covered too.
     if (changed || wanted) set_all_threads(wanted);
-    Sleep(500);
+    for (int i = 0; i < 5 && !g_stop; ++i) Sleep(100);
   }
+  if (g_armed.load()) set_all_threads(0);  // clear the debug registers we set
+  return 0;
 }
 
 }  // namespace
 
 void watch_start(const std::filesystem::path& dir) {
   g_file = dir / L"MetalGearSkate.watch";
-  AddVectoredExceptionHandler(1, on_exception);
-  if (HANDLE thread = CreateThread(nullptr, 0, poll, nullptr, 0, nullptr)) CloseHandle(thread);
+  g_stop = false;
+  g_handler = AddVectoredExceptionHandler(1, on_exception);
+  g_thread = CreateThread(nullptr, 0, poll, nullptr, 0, nullptr);
+}
+
+void watch_stop() {
+  g_stop = true;
+  if (g_thread) {
+    WaitForSingleObject(g_thread, INFINITE);
+    CloseHandle(g_thread);
+    g_thread = nullptr;
+  }
+  if (g_handler) RemoveVectoredExceptionHandler(g_handler);
+  g_handler = nullptr;
 }

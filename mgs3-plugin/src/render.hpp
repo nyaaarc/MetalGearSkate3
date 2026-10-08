@@ -22,6 +22,9 @@ namespace render {
 // Loads the board meshes (from [skate] skate_data) and installs the Present hooks.
 void start(const std::filesystem::path& plugin_dir, HMODULE ffi);
 
+// Removes the hooks and releases everything created on the game's device (core unload).
+void stop();
+
 // Test harness `render <key> <value>`: change a setting live (not saved to the ini).
 // Keys: camera (skate|game|object), skate_fov_deg (0 = the engine's), fov_deg, near_mm, far_mm,
 // aspect, flip_z, depth_game, debug (fov_deg..flip_z only matter for camera=object; aspect also

@@ -25,7 +25,8 @@ with the game's camera following. See "What works" below.
    - finds MGS3 through Steam (or asks for its folder);
    - installs an ASI loader if there isn't one ([Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader)
      v9.7.4 as `wininet.dll`; `-WithHDFix` installs [MGSHDFix](https://github.com/ShizCalev/MGSHDFix) 4.1.2 instead);
-   - copies `MetalGearSkate.asi` and `skate_ffi.dll` into the game's `plugins` folder;
+   - copies `MetalGearSkate.asi`, `MetalGearSkate.core.dll` (as `plugins\MetalGearSkate\core.dll`) and
+     `skate_ffi.dll` into the game's `plugins` folder;
    - asks for your Skate 3 `.iso` (or folder, or `default.xex`), unpacks it with
      [extract-xiso](https://github.com/XboxDev/extract-xiso) and converts the skate data from it with
      the converter of [2010 Rust Rewrite Mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup)
@@ -38,12 +39,12 @@ with the game's camera following. See "What works" below.
 3. Start MGS3, load a stage (Groznyj Grad, `s091a`, from the developer menu's stage select is a
    good one) and press **F5** to start or stop skating.
 
-Uninstall: delete `plugins\MetalGearSkate.asi`, `plugins\skate_ffi.dll` and `plugins\MetalGearSkate.ini`,
+Uninstall: delete `plugins\MetalGearSkate.asi`, the `plugins\MetalGearSkate` folder, `plugins\skate_ffi.dll` and `plugins\MetalGearSkate.ini`,
 and the `%LOCALAPPDATA%\MetalGearSkate` folder.
 
 ## Trying it (developers)
 
-Put `MetalGearSkate.asi`, `skate_ffi.dll` and a `MetalGearSkate.ini` (see
+Put `MetalGearSkate.asi`, `skate_ffi.dll`, `MetalGearSkate.core.dll` (as `MetalGearSkate\core.dll`) and a `MetalGearSkate.ini` (see
 `mgs3-plugin/MetalGearSkate.example.ini`) in the game's `plugins` folder, load a flat stage such as
 Groznyj Grad (`s091a`), and press **F5** to start or stop skating with an Xbox controller.
 The stage's real collision is loaded on F5; the board is drawn with Skate 3's own textures, Snake takes the skater's pose, and the view switches to Skate 3's chase camera.
@@ -52,7 +53,7 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 
 | Folder | What |
 |---|---|
-| `mgs3-plugin/` | The game side: a C++ ASI plugin (`MetalGearSkate.asi`) loaded into MGS3 |
+| `mgs3-plugin/` | The game side, in C++: a small loader (`MetalGearSkate.asi`, an ASI plugin) and the plugin itself (`MetalGearSkate.core.dll`), which the loader can swap while the game runs |
 | `skate-ffi/` | A 64-bit Rust DLL (`skate_ffi.dll`) wrapping the Skate engine in a C API |
 | `mashup/` | The Skate engine crates, taken from [2010 Rust Rewrite Mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup) at `f608f85` with its licence and notice |
 | `setup.cmd`, `tools/setup.ps1` | Player setup (above) |
@@ -63,10 +64,12 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 
 1. Install [Visual Studio Build Tools 2022](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
    with **Desktop development with C++**, and [Rust](https://rustup.rs).
-2. Run `build.cmd`. It produces `mgs3-plugin\build\Release\MetalGearSkate.asi` and
+2. Run `build.cmd`. It produces `mgs3-plugin\build\Release\MetalGearSkate.asi`,
+   `mgs3-plugin\build\Release\MetalGearSkate.core.dll` and
    `skate-ffi\target\x86_64-pc-windows-msvc\release\skate_ffi.dll`.
-3. To test: copy both next to `METAL GEAR SOLID3.exe` (with an ASI loader installed) and
-   start the game. `MetalGearSkate.log` appears beside the plugin.
+3. To test: `python -I tools/gametest.py install` (or `setup.cmd`), then start the game.
+   `MetalGearSkate.log` appears beside the plugin. After a plugin change, `build.cmd` and
+   `python -I tools/gametest.py reload` swap the new core in without restarting the game.
 
 ## What works
 

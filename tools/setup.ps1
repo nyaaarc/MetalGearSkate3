@@ -171,10 +171,15 @@ if ($WithHDFix) {
 
 Step 'Metal Gear Skate'
 $asi = Find-Built 'MetalGearSkate.asi' 'mgs3-plugin\build\Release\MetalGearSkate.asi'
+$core = Find-Built 'MetalGearSkate.core.dll' 'mgs3-plugin\build\Release\MetalGearSkate.core.dll'
 $dll = Find-Built 'skate_ffi.dll' 'skate-ffi\target\x86_64-pc-windows-msvc\release\skate_ffi.dll'
-if (-not $asi -or -not $dll) { Fail 'MetalGearSkate.asi / skate_ffi.dll not found (in a release they sit beside setup.cmd; from source, run build.cmd first).' }
-Act "create $Plugins" { New-Item -ItemType Directory -Force $Plugins | Out-Null }
+if (-not $asi -or -not $core -or -not $dll) { Fail 'MetalGearSkate.asi / MetalGearSkate.core.dll / skate_ffi.dll not found (in a release they sit beside setup.cmd; from source, run build.cmd first).' }
+# The .asi is a small loader; the plugin itself is the core DLL in plugins\MetalGearSkate\, out of
+# the ASI loader's way (it can be swapped while the game runs).
+$coreDir = Join-Path $Plugins 'MetalGearSkate'
+Act "create $coreDir" { New-Item -ItemType Directory -Force $coreDir | Out-Null }
 Act "copy $asi -> $Plugins" { Copy-Item -Force $asi $Plugins }
+Act "copy $core -> $coreDir\core.dll" { Copy-Item -Force $core (Join-Path $coreDir 'core.dll') }
 Act "copy $dll -> $Plugins" { Copy-Item -Force $dll $Plugins }
 }
 
@@ -279,4 +284,4 @@ if ($python -and $smoke) {
 
 Step 'Done'
 Say '  Start MGS3, load a stage (Groznyj Grad, s091a, is a good one) and press F5 to skate.'
-Say "  Uninstall: delete plugins\MetalGearSkate.asi, plugins\skate_ffi.dll and plugins\MetalGearSkate.ini; converted data is in $DataDir."
+Say "  Uninstall: delete plugins\MetalGearSkate.asi, plugins\MetalGearSkate\, plugins\skate_ffi.dll and plugins\MetalGearSkate.ini; converted data is in $DataDir."

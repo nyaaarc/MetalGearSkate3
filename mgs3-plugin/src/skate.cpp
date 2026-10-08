@@ -18,6 +18,7 @@
 #include "skate_ffi.h"
 #include "game.hpp"
 #include "log.hpp"
+#include "core_api.hpp"
 #include "pose.hpp"
 
 #pragma comment(lib, "xinput.lib")
@@ -138,6 +139,9 @@ void set_status(const Status& s) {
   g_status = s;
 }
 HMODULE g_ffi_module = nullptr;
+core::CoreShared* g_shared = nullptr;
+std::atomic<bool> g_stop{false};  // core unload: the skate thread hands over and exits
+HANDLE g_thread = nullptr;
 
 // Board pose published by the skate thread for the renderer.
 std::mutex g_pose_mutex;
@@ -330,16 +334,25 @@ class Spare {
   template <class Make>
   void prepare(Make make) {
     if (building_.exchange(true)) return;
-    std::thread([this, make] {
+    if (worker_.joinable()) worker_.join();  // the last build's thread, already done
+    worker_ = std::thread([this, make] {
       ready_ = make();
       building_ = false;
-    }).detach();
+    });
   }
   MgskSession* take() { return ready_.exchange(nullptr); }
+  void set(MgskSession* s) { ready_ = s; }
+  // Joins the builder: its thread runs this module's code to the end, even after `building_`
+  // clears, so the module mustn't be freed before it has exited.
+  void wait() {
+    if (worker_.joinable()) worker_.join();
+  }
+  ~Spare() { wait(); }
 
  private:
   std::atomic<MgskSession*> ready_{nullptr};
   std::atomic<bool> building_{false};
+  std::thread worker_;
 };
 
 DWORD WINAPI run(LPVOID) {
@@ -376,17 +389,29 @@ DWORD WINAPI run(LPVOID) {
   };
   const DWORD started = GetTickCount();
   bool posing = false;
-  MgskSession* session = make_session(&posing);
+  // A session handed over by the previous core (a reload) is reused as is.
+  MgskSession* session = static_cast<MgskSession*>(g_shared->session);
+  if (session) {
+    posing = g_shared->posing;
+  } else {
+    session = make_session(&posing);
+  }
+  g_shared->session = nullptr;
   if (!session) return 0;
   if (posing) log("skate: retargeting onto %s (mirror_x %d)", mdl.string().c_str(), mirror);
   Spare spare;
   auto prepare_spare = [&spare, make_session] { spare.prepare([make_session] { return make_session(nullptr); }); };
-  prepare_spare();
+  if (g_shared->spare) {
+    spare.set(static_cast<MgskSession*>(g_shared->spare));
+    g_shared->spare = nullptr;
+  } else {
+    prepare_spare();
+  }
   const auto install_geom = reinterpret_cast<InstallGeomFn>(GetProcAddress(g_ffi_module, "mgsk_install_geom"));
   // `collision`: folder of pre-exported <geom>.bin files, used when the DLL can't read .geom.
   const std::filesystem::path collision_dir = ini_string("collision", "");
   if (!install_geom) log("skate: skate_ffi.dll has no .geom reader; using %s", collision_dir.string().c_str());
-  std::string collision_stage;  // stage whose collision the session holds; empty = flat floor
+  std::string collision_stage = g_shared->collision_stage;  // stage whose collision the session holds; empty = flat floor
   // Optional: older skate_ffi.dll builds have no board export (then nothing is drawn).
   const auto pose_fn = reinterpret_cast<decltype(&mgsk_board_pose)>(GetProcAddress(g_ffi_module, "mgsk_board_pose"));
   if (!pose_fn) log("skate: skate_ffi.dll has no mgsk_board_pose; the board won't be drawn");
@@ -404,6 +429,8 @@ DWORD WINAPI run(LPVOID) {
   bool key_was_down = false;
   Status st;
   st.ready = true;
+  st.collision_triangles = g_shared->collision_triangles;
+  st.rails = g_shared->rails;
   set_status(st);
   int ticks = 0;
   // Installs the current stage's collision (once per stage, else a flat floor at `at`) and puts
@@ -471,13 +498,19 @@ DWORD WINAPI run(LPVOID) {
   // Snake's actor is frozen while skating (game::freeze_snake). Where he got on the board, and
   // for a moment after skate off, a watch: if the game then drops him (no floor of its own
   // there, e.g. s091a's out-of-bounds strip), he goes back to where he got on.
-  bool frozen = false;
-  game::Vec3 entry{};
+  bool frozen = g_shared->frozen.control != nullptr;  // still frozen by the previous core
+  game::Vec3 entry{g_shared->entry_mm[0], g_shared->entry_mm[1], g_shared->entry_mm[2]};
   int watch_ticks = 0;
   float watch_y = 0;    // his height at skate off
   int hold_ticks = 0;   // holding him on the entry spot while the game lands him there
+  if (g_shared->resume) {
+    // The previous core stopped mid-ride: back on the board where he was.
+    g_shared->resume = false;
+    request_at(g_shared->resume_mm[0], g_shared->resume_mm[1], g_shared->resume_mm[2], g_shared->resume_heading_deg);
+    log("skate: resuming the ride after a reload");
+  }
   Clock clock(period);
-  for (;;) {
+  while (!g_stop) {
     clock.wait();
     const bool key_down = (GetAsyncKeyState(kToggleKey) & 0x8000) != 0;
     if (const int want = g_stealth.exchange(-1); want >= 0) {
@@ -683,7 +716,7 @@ DWORD WINAPI run(LPVOID) {
     stealth.hold();
     if (posing) pose::publish(have_snake ? snake_bones : nullptr);
     set_status(st);
-    if (++ticks % 120 == 0) {
+    if (++ticks % 120 == 0 && log_verbose()) {
       const pose::Stats ps = pose::stats();
       log("skate: pose hook calls %llu, palette slots posed %llu in %llu Snake draws, last bone count %d, nearest "
           "57-bone object %.0f mm, relative %d",
@@ -694,6 +727,39 @@ DWORD WINAPI run(LPVOID) {
           heading * 180.f / std::numbers::pi_v<float>, pad.buttons, pad.left[0], pad.left[1], pad.right[0], pad.right[1]);
     }
   }
+
+  // Core unload: everything that points into this module goes, the session goes to the loader.
+  if (skating) {
+    // Snake stays frozen (the loader owns the stub); the next core puts him back on the board.
+    if (const game::Vec3* snake = game::snake_position()) {
+      g_shared->resume = true;
+      g_shared->resume_mm[0] = snake->x;
+      g_shared->resume_mm[1] = snake->y;
+      g_shared->resume_mm[2] = snake->z;
+      const int16_t* yaw = game::snake_yaw();
+      g_shared->resume_heading_deg = yaw ? *yaw * 360.f / 65536.f : 0.f;
+    } else {
+      game::freeze_snake(false);
+    }
+  }
+  game::engine_takes_injection(false);
+  game::block_input(false);
+  pose::publish(nullptr);
+  publish_pose(nullptr);
+  stealth.end();
+  g_shared->entry_mm[0] = entry.x;
+  g_shared->entry_mm[1] = entry.y;
+  g_shared->entry_mm[2] = entry.z;
+  spare.wait();
+  g_shared->spare = spare.take();
+  g_shared->session = session;
+  g_shared->posing = posing;
+  strncpy_s(g_shared->collision_stage, collision_stage.c_str(), _TRUNCATE);
+  g_shared->collision_triangles = st.collision_triangles;
+  g_shared->rails = st.rails;
+  st = {};
+  set_status(st);
+  return 0;
 }
 
 }  // namespace
@@ -745,10 +811,21 @@ void reset_recent() {
   g_recent_empty = true;
 }
 
-void start(const std::filesystem::path& plugin_dir, HMODULE ffi) {
+void start(const std::filesystem::path& plugin_dir, HMODULE ffi, core::CoreShared* shared) {
   g_plugin_dir = plugin_dir;
   g_ffi_module = ffi;
-  if (HANDLE thread = CreateThread(nullptr, 0, run, nullptr, 0, nullptr)) CloseHandle(thread);
+  g_shared = shared;
+  g_stop = false;
+  g_thread = CreateThread(nullptr, 0, run, nullptr, 0, nullptr);
+}
+
+void stop() {
+  g_stop = true;
+  if (g_thread) {
+    WaitForSingleObject(g_thread, INFINITE);
+    CloseHandle(g_thread);
+    g_thread = nullptr;
+  }
 }
 
 }  // namespace skate

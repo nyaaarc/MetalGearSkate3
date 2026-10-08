@@ -8,3 +8,6 @@
 // writes those 4 bytes is logged once, with registers and nearby code bytes (enough to
 // build a signature). Delete the file to disarm. Polls twice a second.
 void watch_start(const std::filesystem::path& dir);
+
+// Stops the poll thread, clears the debug registers and removes the exception handler (core unload).
+void watch_stop();

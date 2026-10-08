@@ -15,6 +15,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core_api.hpp"
 #include "log.hpp"
 
 namespace game {
@@ -231,7 +232,10 @@ uint8_t* rip_target(uint8_t* at) {
 
 }  // namespace
 
-bool init() {
+core::CoreShared* g_shared = nullptr;
+
+bool init(core::CoreShared* shared) {
+  g_shared = shared;
   auto* exe = reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
   const auto site = scan(kSnakeControlSig);
   if (!site) {
@@ -368,16 +372,13 @@ constexpr size_t kRenderObject = 0x970, kBoundsMax = 0x120, kBoundsMin = 0x130, 
                  kObjBoneCount = 0xB0;
 constexpr float kHugeBoundsMm = 1.0e7f;
 
-void __fastcall frozen_update(void*) {}
-
-struct Frozen {
-  uint8_t* control = nullptr;
-  void* update = nullptr;     // the actor's own update, put back on unfreeze
-  uint8_t bounds[0x30] = {};  // +0x120..+0x14F as they were
-} g_frozen;
 }  // namespace
 
+// The frozen state and the no-op update live in the loader (core_api.hpp), so a core can be
+// unloaded and replaced while Snake is frozen.
 bool freeze_snake(bool frozen) {
+  if (!g_shared || !g_shared->frozen_update) return false;
+  core::Frozen& g_frozen = g_shared->frozen;
   uint8_t* control = (g_snake_control && *g_snake_control) ? *g_snake_control : nullptr;
   if (!frozen) {
     if (!g_frozen.control) return true;
@@ -407,7 +408,7 @@ bool freeze_snake(bool frozen) {
   g_frozen.control = control;
   g_frozen.update = update;
   memcpy(g_frozen.bounds, control + kRenderObject + kBoundsMax, sizeof(g_frozen.bounds));
-  void* stub = reinterpret_cast<void*>(&frozen_update);
+  void* stub = reinterpret_cast<void*>(g_shared->frozen_update);
   memcpy(control + kActorUpdateSlot, &stub, sizeof(stub));
   const float huge_max[3] = {kHugeBoundsMm, kHugeBoundsMm, kHugeBoundsMm};
   const float huge_min[3] = {-kHugeBoundsMm, -kHugeBoundsMm, -kHugeBoundsMm};
@@ -417,12 +418,29 @@ bool freeze_snake(bool frozen) {
   return true;
 }
 
+const uint8_t* snake_render_object() {
+  if (!g_snake_control || !*g_snake_control) return nullptr;
+  return *g_snake_control + kRenderObject;
+}
+
 int16_t* snake_target_yaw() {
   if (!g_snake_control || !*g_snake_control) return nullptr;
   return reinterpret_cast<int16_t*>(*g_snake_control + kSnakeTargetYawOffset);
 }
 
 uint8_t* linkvar() { return g_linkvarbuf ? *g_linkvarbuf : nullptr; }
+
+void stop() {
+  g_block_input = false;
+  g_engine_takes_injection = false;
+  g_pad_copy_hook.reset();
+  g_set_area_hook.reset();
+  g_change_scenario_hook.reset();
+  {
+    std::lock_guard lock(g_pad_mutex);
+    g_inject.clear();
+  }
+}
 
 uint8_t* find(std::string_view signature) {
   const auto hit = scan(signature);

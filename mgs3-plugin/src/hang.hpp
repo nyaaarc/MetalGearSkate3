@@ -8,4 +8,7 @@ namespace hang {
 
 void start(const std::filesystem::path& plugin_dir);
 
+// Stops and joins the watchdog thread (core unload).
+void stop();
+
 }  // namespace hang

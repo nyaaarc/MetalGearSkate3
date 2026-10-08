@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core_api.hpp"
+
 #include <cstdint>
 #include <string_view>
 
@@ -23,9 +25,13 @@ struct Pad {
   uint8_t right_x, right_y, left_x, left_y;
 };
 
-// Scans the game's code for the signatures below. Logs each result. Call once, after the
-// game has unpacked (any time after our init thread starts).
-bool init();
+// Scans the game's code for the signatures below and installs the pad and stage hooks. Logs each
+// result. Call once, after the game has unpacked (any time after our init thread starts).
+// `shared` holds Snake's frozen state across core reloads.
+bool init(core::CoreShared* shared);
+
+// Removes the hooks (core unload). Snake stays frozen if he was (the loader owns that state).
+void stop();
 
 // Snake's gameplay position in mm (y up), or nullptr when no player exists (menus, loading).
 // Writing it moves Snake for real; his feet IK keeps the old contact until he moves.
@@ -42,6 +48,9 @@ int16_t* snake_target_yaw();
 // he started; the renderer poses his mesh relative to it). False if his actor isn't laid out
 // as expected (then nothing is changed).
 bool freeze_snake(bool frozen);
+
+// Snake's render object (his actor's, at a fixed offset from his control block), or nullptr.
+const uint8_t* snake_render_object();
 
 // The game camera's eye and look-at points (mm, y up), read from the static camera object at
 // exe+1D39D80 (MC 3.0.0 only; no signature yet). False when they don't look like positions.

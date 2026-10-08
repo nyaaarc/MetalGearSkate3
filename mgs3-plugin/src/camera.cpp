@@ -88,6 +88,8 @@ bool init() {
   return static_cast<bool>(g_hook);
 }
 
+void stop() { g_hook.reset(); }
+
 void set_driving(bool on) { g_driving = on; }
 
 void set_zoom(float zoom) { g_zoom = zoom; }

@@ -2,12 +2,14 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
 
+#include "core.hpp"
 #include "game.hpp"
 #include "log.hpp"
 #include "render.hpp"
@@ -146,6 +148,10 @@ std::string run(const std::string& line) {
     skate::request(arg == "on");
     return "ok";
   }
+  if (verb == "reload") {  // load the current build of the core (the loader swaps it within ~250 ms)
+    core::request_reload();
+    return "ok reloading";
+  }
   if (verb == "recent") {  // recent reset: start collecting states/peak height afresh
     skate::reset_recent();
     return "ok";
@@ -219,14 +225,14 @@ void write_state() {
   const int16_t* yaw = game::snake_yaw();
   char json[2048];
   snprintf(json, sizeof(json),
-           "{\"tick_ms\": %lu, \"stage\": \"%s\", \"snake\": %s, \"snake_yaw\": %d,\n"
+           "{\"tick_ms\": %lu, \"core_generation\": %u, \"stage\": \"%s\", \"snake\": %s, \"snake_yaw\": %d,\n"
            " \"engine_ready\": %s, \"skating\": %s, \"skater_m\": [%.3f, %.3f, %.3f], \"skater_heading_deg\": %.1f,"
            " \"speed_mps\": %.2f, \"engine_state\": \"%s\", \"collision_triangles\": %d, \"rails\": %d,\n"
            " \"recent\": {\"states\": \"%s\", \"max_y\": %.3f, \"min_y\": %.3f, \"max_speed_mps\": %.2f},\n"
            " \"pad\": {\"seen\": %s, \"buttons\": \"0x%04X\", \"lx\": %u, \"ly\": %u, \"rx\": %u, \"ry\": %u},"
            " \"injected_frames_left\": %d, \"keys_down\": [%s],\n"
            " \"render\": {\"hooked\": %s, \"presents\": %llu, \"drawn\": %llu, \"width\": %u, \"height\": %u}}\n",
-           GetTickCount(), stage ? stage : "",
+           GetTickCount(), core::shared() ? core::shared()->generation : 0u, stage ? stage : "",
            snake ? (std::string("[") + std::to_string(snake->x) + ", " + std::to_string(snake->y) + ", " +
                     std::to_string(snake->z) + "]").c_str()
                  : "null",
@@ -242,19 +248,33 @@ void write_state() {
   MoveFileExW(tmp.c_str(), (g_dir / L"MetalGearSkate.state.json").c_str(), MOVEFILE_REPLACE_EXISTING);
 }
 
+std::atomic<bool> g_stop{false};
+HANDLE g_thread = nullptr;
+
 DWORD WINAPI poll(LPVOID) {
-  for (int i = 0;; ++i) {
+  for (int i = 0; !g_stop; ++i) {
     run_command_file();
     if (i % 4 == 0) write_state();
     Sleep(50);
   }
+  return 0;
 }
 
 }  // namespace
 
 void start(const std::filesystem::path& plugin_dir) {
   g_dir = plugin_dir;
-  if (HANDLE thread = CreateThread(nullptr, 0, poll, nullptr, 0, nullptr)) CloseHandle(thread);
+  g_stop = false;
+  g_thread = CreateThread(nullptr, 0, poll, nullptr, 0, nullptr);
+}
+
+void stop() {
+  g_stop = true;
+  if (g_thread) {
+    WaitForSingleObject(g_thread, INFINITE);
+    CloseHandle(g_thread);
+    g_thread = nullptr;
+  }
 }
 
 }  // namespace control

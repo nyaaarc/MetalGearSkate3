@@ -18,6 +18,9 @@ constexpr int kSnakeBones = 57;
 // Install the hook. Call once after game::init(). False if the signature wasn't found.
 bool init();
 
+// Removes the hook and forgets the published pose (core unload).
+void stop();
+
 // From the skate thread: the latest pose (kSnakeBones * 16 floats), or nullptr to stop posing.
 void publish(const float* bones);
 

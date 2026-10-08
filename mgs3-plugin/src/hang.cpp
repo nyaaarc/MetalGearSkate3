@@ -4,6 +4,7 @@
 #include <dbghelp.h>
 #include <tlhelp32.h>
 
+#include <atomic>
 #include <vector>
 
 #include "log.hpp"
@@ -107,11 +108,14 @@ void report() {
   }
 }
 
+std::atomic<bool> g_stop{false};
+HANDLE g_thread = nullptr;
+
 DWORD WINAPI watch(LPVOID) {
   uint64_t last = 0;
   int stale = 0;
-  for (;;) {
-    Sleep(1000);
+  while (!g_stop) {
+    for (int i = 0; i < 10 && !g_stop; ++i) Sleep(100);
     const uint64_t presents = render::status().presents;
     if (presents != last) {
       last = presents;
@@ -120,13 +124,24 @@ DWORD WINAPI watch(LPVOID) {
       report();  // once per hang; re-armed when frames come back
     }
   }
+  return 0;
 }
 
 }  // namespace
 
 void start(const std::filesystem::path& plugin_dir) {
   g_dir = plugin_dir;
-  if (HANDLE thread = CreateThread(nullptr, 0, watch, nullptr, 0, nullptr)) CloseHandle(thread);
+  g_stop = false;
+  g_thread = CreateThread(nullptr, 0, watch, nullptr, 0, nullptr);
+}
+
+void stop() {
+  g_stop = true;
+  if (g_thread) {
+    WaitForSingleObject(g_thread, INFINITE);
+    CloseHandle(g_thread);
+    g_thread = nullptr;
+  }
 }
 
 }  // namespace hang

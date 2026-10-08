@@ -1985,7 +1985,8 @@ void frame(IDXGISwapChain* swap) {
   const uint64_t drawn = g_drawn.fetch_add(1, std::memory_order_relaxed) + 1;
   g_width = bb.Width;
   g_height = bb.Height;
-  if (!g_was_drawing || drawn % 300 == 0) {
+  // Periodic camera/capture diagnostics: `render debug on` only.
+  if (log_verbose() && (!g_was_drawing || drawn % 300 == 0)) {
     if (have_skate_camera) {
       float cam[skate::kCameraFloats] = {};
       skate::camera(cam);
@@ -2105,6 +2106,25 @@ bool install_hooks() {
 
 }  // namespace
 
+void stop() {
+  g_present_hook.reset();
+  g_present1_hook.reset();
+  g_map_hook.reset();
+  g_unmap_hook.reset();
+  g_update_hook.reset();
+  g_hooked = false;
+  // A frame already inside the hooks finishes before its resources go.
+  Sleep(100);
+  {
+    std::lock_guard lock(g_cap_mutex);
+    g_cap_context = nullptr;
+    g_scene_depth.Reset();
+    g_depth_next.Reset();
+    for (DepthCount& d : g_depth_frame) d = {};
+  }
+  g_gpu = Gpu{};
+}
+
 void start(const std::filesystem::path& plugin_dir, HMODULE ffi) {
   const auto ini = plugin_dir / L"MetalGearSkate.ini";
   load_settings(ini);
@@ -2115,6 +2135,7 @@ void start(const std::filesystem::path& plugin_dir, HMODULE ffi) {
     load_rest(std::filesystem::path(exe).parent_path() / L"assets" / L"mdl" / L"us" / L"sna_def.mdl");
   }
   log("render: settings %s", describe(settings()).c_str());
+  set_log_verbose(settings().debug);
   char assets[MAX_PATH] = {};
   GetPrivateProfileStringA("skate", "skate_data", "", assets, MAX_PATH, ini.string().c_str());
   add_cube();
@@ -2144,6 +2165,7 @@ std::string set(const std::string& key, const std::string& value) {
     s = g_settings;
   }
   if (!key.empty()) log("render: set %s %s -> %s", key.c_str(), value.c_str(), describe(s).c_str());
+  set_log_verbose(s.debug);
   return "ok " + describe(s);
 }
 

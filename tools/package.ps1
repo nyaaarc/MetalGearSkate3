@@ -15,8 +15,9 @@ if ($Build) {
     if ($LASTEXITCODE -ne 0) { throw 'build.cmd failed' }
 }
 $asi = Join-Path $Repo 'mgs3-plugin\build\Release\MetalGearSkate.asi'
+$core = Join-Path $Repo 'mgs3-plugin\build\Release\MetalGearSkate.core.dll'
 $dll = Join-Path $Repo 'skate-ffi\target\x86_64-pc-windows-msvc\release\skate_ffi.dll'
-foreach ($f in $asi, $dll) { if (-not (Test-Path $f)) { throw "not built: $f (run build.cmd or package.cmd -Build)" } }
+foreach ($f in $asi, $core, $dll) { if (-not (Test-Path $f)) { throw "not built: $f (run build.cmd or package.cmd -Build)" } }
 
 $rev = (& git -C $Repo rev-parse --short HEAD).Trim()
 $name = "MetalGearSkate-$rev"
@@ -24,7 +25,7 @@ $stage = Join-Path $Repo "dist\$name"
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $stage, "$stage\licenses" | Out-Null
 
-Copy-Item $asi, $dll $stage
+Copy-Item $asi, $core, $dll $stage
 Copy-Item (Join-Path $Repo 'setup.cmd'), (Join-Path $Repo 'tools\setup.ps1'), (Join-Path $Repo 'tools\ffi_smoke.py') $stage
 Copy-Item (Join-Path $Repo 'mgs3-plugin\MetalGearSkate.example.ini') $stage
 Copy-Item (Join-Path $Repo 'README.md'), (Join-Path $Repo 'LICENSE') $stage
