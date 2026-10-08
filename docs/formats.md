@@ -153,6 +153,16 @@ analogues to find, guided by the MGS2 patterns and the GirianSeed decomp.
   and replacing `gVS_Pers` by `VP * T(L + d)` (VP with row 2 = `(0, 0, 0, k)`) redraws the draw
   from any camera VP. The game draws a stage piece before any other main-camera draw (0 draws
   before L was known per frame on s091a). Light/shadow passes have `row 3 = (0, 0, 0, 1)`.
+- **Bone palette (skinned draws).** `gVS_Mat[64]`, `row_major float3x4` at byte 624 of `$Globals`
+  (48 bytes per slot), indexed per vertex by `BLENDINDICES` (4 bones, `BLENDWEIGHT`); each mesh
+  draw uses a few slots (bone remap per draw; ~550 Snake draws/frame). For Snake every slot is,
+  exactly (0.0 mm on a dump): `[R^T | T - O - R^T * rest]`, with `R`/`T` a bone's world matrix as
+  the game computed it (rows = axes, translation row, mm; the same values as `[obj+0xC0]`),
+  `rest` that bone's rest position from `sna_def.mdl` (no rest rotations), and `O` the render
+  object's translation (`obj+0x20` row 3) = `L + d` from that draw's `gVS_Pers`. So a slot is
+  bone x inverse bind relative to O. The palette is *not* read from `[obj+0xC0]` after
+  `exe+CE760` starts: overwriting those bones there changes nothing on screen. His gear is a
+  separate skinned object (another O, ~30 draws).
 - **Signatures (MC 3.0.0, both unique in live code):**
   - `48 8B 0D ?? ?? ?? ?? 8B E8 48 85 C9 74 08 8B 81 D8` (disp at +3) → `exe+1E16CC0`,
     pointer to Snake's actor (`pos-0x130`). Used at dozens of sites with a null check.

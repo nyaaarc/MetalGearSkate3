@@ -23,7 +23,7 @@ no board or skating animation yet. See "What works" below.
 Put `MetalGearSkate.asi`, `skate_ffi.dll` and a `MetalGearSkate.ini` (see
 `mgs3-plugin/MetalGearSkate.example.ini`) in the game's `plugins` folder, load a flat stage such as
 Groznyj Grad (`s091a`), and press **F5** to start or stop skating with an Xbox controller.
-The stage's real collision is loaded on F5; Snake still plays his walk animations, and no board is drawn yet.
+The stage's real collision is loaded on F5; the board is drawn in flat colours, Snake takes the skater's pose, and the view switches to Skate 3's chase camera.
 
 ## Repository layout
 
@@ -61,6 +61,8 @@ The stage's real collision is loaded on F5; Snake still plays his walk animation
   `skater.glb` in that body's frame; `tools/board_check.py` checks both off-game.
 - The board is drawn into the game's frame (Present hook) with the game's own view-projection,
   read from its vertex-shader constants each frame; in game it sits on the ground under Snake.
+- While skating, Snake is drawn in the skater's pose (his GPU bone palette is rewritten from
+  `mgsk_snake_pose` each frame): pushing, riding and bailing.
 - While skating, the whole frame is drawn from Skate 3's own chase camera (`mgsk_camera`): the
   game's camera constants are rewritten per draw, so scenery, Snake and the board all follow it.
 - Grind rails: `mgsk_install_geom` finds the stage's grindable lips (ledges, kerbs, box and
@@ -74,7 +76,7 @@ The stage's real collision is loaded on F5; Snake still plays his walk animation
 ## What's missing
 
 - A stable lookup for the camera and skeleton
-- Feeding MGS3 collision to the skate world; posing Snake from the skater (`mgsk_snake_pose` computes his bones, not applied in game)
+- Feeding MGS3 collision to the skate world; Snake's gear (separate model) still follows the game's own animation while skating
 - Drawing the board in game: flat colours only, no scene occlusion (no depth buffer is bound at Present)
 - Setup (finding MGS3, converting your Skate 3 files), settings menu, audio
 

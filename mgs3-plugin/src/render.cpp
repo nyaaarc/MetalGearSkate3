@@ -787,6 +787,22 @@ void write_dump() {
       fprintf(file, "\n");
     }
   }
+  {
+    float ours[pose::kSnakeBones * 16];
+    if (pose::current(ours)) {
+      for (int b = 0; b < pose::kSnakeBones; ++b) {
+        fprintf(file, "ours %d", b);
+        for (int i = 0; i < 16; ++i) fprintf(file, " %.6g", ours[b * 16 + i]);
+        fprintf(file, "\n");
+      }
+    }
+    float board[skate::kBoardBodies * 16];
+    if (skate::board_pose(board)) {
+      fprintf(file, "deck");
+      for (int i = 0; i < 16; ++i) fprintf(file, " %.6g", board[MGSK_BODY_DECK * 16 + i]);
+      fprintf(file, "\n");
+    }
+  }
   for (const auto& e : g_dump) {
     fprintf(file, "draw");
     for (const float v : e) fprintf(file, " %.6g", v);
