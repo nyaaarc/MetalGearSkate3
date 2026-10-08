@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -95,6 +96,32 @@ std::string run(const std::string& line) {
     if (!snake) return "error: no player";
     *snake = {x, y, z};
     return "ok";
+  }
+  if (verb == "peek" || verb == "poke") {
+    // peek <offset> <i8|i16|i32|f32> / poke <offset> <type> <value>: the link-variable (state) buffer.
+    size_t offset;
+    std::string type;
+    if (!(in >> offset >> type)) return "error: usage " + verb + " <linkvar offset> <i8|i16|i32|f32> [value]";
+    uint8_t* link = game::linkvar();
+    if (!link) return "error: no linkvar buffer";
+    uint8_t* at = link + offset;
+    if (verb == "poke") {
+      double value;
+      if (!(in >> value)) return "error: poke needs a value";
+      if (type == "i8") *at = static_cast<uint8_t>(value);
+      else if (type == "i16") { const int16_t v = static_cast<int16_t>(value); memcpy(at, &v, 2); }
+      else if (type == "i32") { const int32_t v = static_cast<int32_t>(value); memcpy(at, &v, 4); }
+      else if (type == "f32") { const float v = static_cast<float>(value); memcpy(at, &v, 4); }
+      else return "error: type must be i8|i16|i32|f32";
+      return "ok";
+    }
+    char text[64];
+    if (type == "i8") snprintf(text, sizeof(text), "%d", *at);
+    else if (type == "i16") { int16_t v; memcpy(&v, at, 2); snprintf(text, sizeof(text), "%d", v); }
+    else if (type == "i32") { int32_t v; memcpy(&v, at, 4); snprintf(text, sizeof(text), "%d", v); }
+    else if (type == "f32") { float v; memcpy(&v, at, 4); snprintf(text, sizeof(text), "%g", v); }
+    else return "error: type must be i8|i16|i32|f32";
+    return text;
   }
   if (verb == "release") {
     game::inject_pad(0, 128, 128, 128, 128, 0);
