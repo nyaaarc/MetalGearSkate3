@@ -267,8 +267,11 @@ int16_t axis(uint8_t value, bool flip) {
 // isn't visible to XInput while the game uses Steam Input). A real XInput pad takes priority.
 MgskControls read_pad() {
   MgskControls c{};
+  // Harness input first: one injected frame per engine tick (frame-exact, as the recipes assume).
+  game::Pad injected;
+  const bool have_injected = game::take_injected(injected);
   XINPUT_STATE state{};
-  if (XInputGetState(0, &state) == ERROR_SUCCESS) {
+  if (!have_injected && XInputGetState(0, &state) == ERROR_SUCCESS) {
     const XINPUT_GAMEPAD& g = state.Gamepad;
     c.buttons = g.wButtons;
     c.left_trigger = g.bLeftTrigger;
@@ -280,8 +283,8 @@ MgskControls read_pad() {
     return c;
   }
   game::Pad pad;
-  if (!game::pad(pad)) return c;
-  const game::Pad* p = &pad;
+  if (!have_injected && !game::pad(pad)) return c;
+  const game::Pad* p = have_injected ? &injected : &pad;
   for (const ButtonMap& b : kButtonMap) {
     if (p->buttons & b.ps2) c.buttons = static_cast<uint16_t>(c.buttons | b.xinput);
   }
@@ -550,6 +553,7 @@ DWORD WINAPI run(LPVOID) {
       }
     }
     st.skating = skating;
+    game::engine_takes_injection(skating);
     if (skating != frozen) {
       if (skating) {
         game::freeze_snake(true);

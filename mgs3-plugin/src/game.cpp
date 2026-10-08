@@ -136,6 +136,10 @@ struct Injection {
   int frames = 0;
 };
 std::deque<Injection> g_inject;  // guarded by g_pad_mutex; front plays first
+// While skating the engine takes injected frames itself, one per engine tick (take_injected), so
+// harness input is frame-exact against the 60 Hz engine; the game's pad copy runs at its own
+// rate and would stretch or drop frames.
+std::atomic<bool> g_engine_takes_injection{false};
 
 void __fastcall on_pad_copy(uint8_t* dst, uint8_t* src) {
   if (src == g_pads) {  // pad 0
@@ -150,7 +154,7 @@ void __fastcall on_pad_copy(uint8_t* dst, uint8_t* src) {
         g_pending_stage[0] = 0;
       }
       while (!g_inject.empty() && g_inject.front().frames <= 0) g_inject.pop_front();
-      if (!g_inject.empty()) {
+      if (!g_inject.empty() && !g_engine_takes_injection.load(std::memory_order_relaxed)) {
         Injection& step = g_inject.front();
         --step.frames;
         memcpy(src + 4, &step.buttons, sizeof(uint16_t));
@@ -283,6 +287,24 @@ bool pad(Pad& out) {
 }
 
 void block_input(bool blocked) { g_block_input = blocked; }
+
+void engine_takes_injection(bool on) { g_engine_takes_injection = on; }
+
+bool take_injected(Pad& out) {
+  std::lock_guard lock(g_pad_mutex);
+  while (!g_inject.empty() && g_inject.front().frames <= 0) g_inject.pop_front();
+  if (g_inject.empty()) return false;
+  Injection& step = g_inject.front();
+  --step.frames;
+  out = {};
+  out.status = -1;
+  out.buttons = step.buttons;
+  out.right_x = step.sticks[0];
+  out.right_y = step.sticks[1];
+  out.left_x = step.sticks[2];
+  out.left_y = step.sticks[3];
+  return true;
+}
 
 void inject_pad(uint16_t buttons, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry, int frames) {
   std::lock_guard lock(g_pad_mutex);

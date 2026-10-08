@@ -58,6 +58,12 @@ bool pad(Pad& out);
 // centred), so Snake's movement code ignores the controller. The real state still reaches pad().
 void block_input(bool blocked);
 
+// While on, harness-injected pad frames go to the skate engine (take_injected, one per engine
+// tick) instead of the game's pad copy.
+void engine_takes_injection(bool on);
+// The next injected pad frame, if any (consumes it).
+bool take_injected(Pad& out);
+
 // Load a stage by code (e.g. "s091a", or "select" for the developer menu) the way MGSHDFix's
 // "return to developer menu" does. Runs on the game thread at the next pad update. False if
 // the functions weren't found or the name is too long.
