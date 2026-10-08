@@ -156,7 +156,10 @@ void __fastcall on_pad_copy(uint8_t* dst, uint8_t* src) {
       // Only from the developer menu or a gameplay stage: a load during boot ("init", "title")
       // hangs the game in its script interpreter. Until then the request waits.
       const char* stage = current_stage();
-      const bool can_load = stage && stage[0] && strcmp(stage, "init") != 0 && strcmp(stage, "title") != 0;
+      // ...and only once the game has finished its own load (GM_LoadRequest back to 0): loading
+      // over the developer menu while it is still loading (request 17) hangs on a black screen.
+      const bool can_load = stage && stage[0] && strcmp(stage, "init") != 0 && strcmp(stage, "title") != 0 &&
+                            g_load_request && *g_load_request == 0;
       if (g_pending_stage[0] && can_load) {
         load_stage_now(g_pending_stage);
         g_pending_stage[0] = 0;
