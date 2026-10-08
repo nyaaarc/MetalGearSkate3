@@ -1255,7 +1255,14 @@ bool pose_snake(uint8_t* globals) {
     const int pass = bone / kSnakeBones;
     bone %= kSnakeBones;
     const float* m = g_skin.ours + bone * 16;
-    const float o[3] = {g_skin.origin[pass].x, g_skin.origin[pass].y, g_skin.origin[pass].z};
+    // Write relative to the origin the GPU adds back for this draw (L + d) when it is his body's:
+    // where the game moves him between our writes (no floor of its own under him) the snapshot's
+    // origin lags it and he'd jitter. Draws on another origin (his head, ~640 mm up) keep the
+    // snapshot's.
+    Vec o_draw{g_L_frame.x + d.x, g_L_frame.y + d.y, g_L_frame.z + d.z};
+    const Vec gap = o_draw - g_skin.origin[pass];
+    if (dot(gap, gap) > 300.f * 300.f) o_draw = g_skin.origin[pass];
+    const float o[3] = {o_draw.x, o_draw.y, o_draw.z};
     for (int r = 0; r < 3; ++r) {
       for (int c = 0; c < 3; ++c) slot[r * 4 + c] = m[c * 4 + r];
       slot[r * 4 + 3] = m[12 + r] - o[r] -
