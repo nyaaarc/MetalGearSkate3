@@ -23,8 +23,8 @@ constexpr size_t kUpdateBodyOffset = 0x73;
 // lea rax,[cameras]; cmp rax,rbx; jne: the camera table, whose entry 0 is the main camera.
 constexpr std::string_view kMainCameraSig = "48 8D 05 ?? ?? ?? ?? 48 3B C3 0F 85";
 constexpr size_t kLookAt = 0x40, kEye = 0x50;
-// How far ahead of the eye the look-at point goes (mm).
-constexpr float kLookDistanceMm = 3000.f;
+// The look-at point: the skater, this far (mm) above the board, like the game's own (~1 m up).
+constexpr float kLookHeightMm = 1000.f;
 
 SafetyHookInline g_hook;
 uint8_t* g_main = nullptr;
@@ -37,9 +37,8 @@ void __fastcall on_update(uint8_t* cam) {
     if (skate::camera(c)) {
       // c: eye (3, mm), basis columns (side, up, forward), vertical fov (degrees).
       const float eye[3] = {c[0], c[1], c[2]};
-      const float* forward = c + 9;
-      const float look[3] = {eye[0] + forward[0] * kLookDistanceMm, eye[1] + forward[1] * kLookDistanceMm,
-                             eye[2] + forward[2] * kLookDistanceMm};
+      const skate::Status st = skate::status();
+      const float look[3] = {st.skater[0] * 1000.f, st.skater[1] * 1000.f + kLookHeightMm, st.skater[2] * 1000.f};
       memcpy(cam + kLookAt, look, sizeof(look));
       memcpy(cam + kEye, eye, sizeof(eye));
       g_driven.fetch_add(1, std::memory_order_relaxed);
