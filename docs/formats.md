@@ -427,6 +427,19 @@ texture (slots are the board materials in glTF order: 0 deck, 1 truck, 2 wheel) 
 The plugin builds a box-filtered mip chain and samples them as UNORM (the game's back buffer is
 UNORM, gamma-space).
 
+### Render latency against the game camera (s091a, 2026-10-08)
+
+The frame the GPU draws uses the game camera from one, two or occasionally three camera updates
+back, not the latest: the frame's camera reference L (from its first stage draw, gVS_Mat0 =
+T(-L)) equals the eye we wrote that many updates earlier (|L - eye| = 0 for the matching update;
+the game moves neither eye nor target after our write). On s091a's clear strip the latency is a
+steady 2 updates for z < -70 m, a steady 1 for z > -20 m, and flips between 1 and 2 frame to
+frame in between, so a pose taken from the newest tick was a tick (~127 mm at 7.6 m/s) out of
+step with the scene on those frames: Snake and the board shook against the world there and
+nowhere else. Speed sets the size; camera distance, frame time and ticks per frame don't predict
+it. camera.cpp keeps the last eight placements (eye written, board, Snake's pose) and the
+renderer poses each frame from the one whose eye is the frame's L (0 mm on 1498 of 1500 frames).
+
 ### Snake's draws while skating (s091a, run 22)
 
 A dump of every $Globals write in one frame (`render palette now` now records all draws; ones

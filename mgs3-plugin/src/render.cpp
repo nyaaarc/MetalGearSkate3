@@ -1,6 +1,7 @@
 #include "render.hpp"
 
 #include <d3d11.h>
+#include <d3d11_1.h>
 #include <d3dcompiler.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
@@ -64,6 +65,7 @@ struct Settings {
   bool textures = true;      // the board's Skate 3 textures (when the DLL has them), else flat colours
   bool dump_after = false;   // `render palette now` records palettes after Snake is posed (else before)
   bool debug = false;        // marker + axes at Snake's position, skating or not
+  bool stamp = false;        // frame number as black/white blocks, bottom-left (`render stamp on`)
   // skate: while skating, the whole frame is drawn from the Skate 3 engine's chase camera (the
   //        game's camera constants are rewritten), otherwise as `game`;
   // game:   the game's own view-projection (captured), untouched;
@@ -126,6 +128,7 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
   else if (key == "textures") ok = parse_bool(value, n.textures);
   else if (key == "dump_after") ok = parse_bool(value, n.dump_after);
   else if (key == "debug") ok = parse_bool(value, n.debug);
+  else if (key == "stamp") ok = parse_bool(value, n.stamp);
   else if (key == "camera") {
     ok = true;
     if (value == "skate") n.camera = Settings::Camera::Skate;
@@ -167,7 +170,7 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
 void load_settings(const std::filesystem::path& ini) {
   Settings s;
   for (const char* key : {"camera", "drive_zoom", "skate_fov_deg", "fov_deg", "near_mm", "far_mm", "aspect", "flip_z", "depth_game",
-                          "depth_bias", "depth_debug", "textures", "debug"}) {
+                          "depth_bias", "depth_debug", "textures", "debug", "stamp"}) {
     char value[64] = {};
     GetPrivateProfileStringA("render", key, "", value, sizeof(value), ini.string().c_str());
     if (!*value) continue;
@@ -1242,9 +1245,13 @@ struct FrameMetric {
   // The frame's L, and the camera after the game's update vs what we wrote (mm): eye_moved is how
   // far the game moved the eye after our write; L_eye is |L - eye written| (what L tracks).
   float L[3], eye_moved, target_moved, L_eye, L_target;
+  // Where the deck and Snake's root land on screen (pixels, back buffer; NaN off screen), filled in
+  // at Present for `gametest monitor`.
+  float deck_sx, deck_sy, snake_sx, snake_sy;
 };
 std::vector<FrameMetric> g_metrics;
 int g_metrics_left = 0;
+bool g_metrics_write = false;
 std::filesystem::path g_metrics_path;
 uint64_t g_metrics_frame = 0;
 constexpr int kAnchored = 1 << 20;
@@ -1672,16 +1679,23 @@ void note_frame_metrics() {
     m.object_mm = std::sqrt(dot(gap, gap));
   }
   g_metrics.push_back(m);
+  g_metrics.back().deck_sx = g_metrics.back().deck_sy = g_metrics.back().snake_sx = g_metrics.back().snake_sy = NAN;
   if (--g_metrics_left > 0) return;
+  g_metrics_write = true;  // at Present, once the last row has its screen positions
+}
+
+// Writes the metrics CSV. Caller holds g_cap_mutex.
+void write_metrics() {
+  g_metrics_write = false;
   FILE* file = nullptr;
   if (_wfopen_s(&file, g_metrics_path.c_str(), L"w") == 0 && file) {
     fprintf(file,
             "frame,ms,skating,tick,draws,posed_slots,near_draws,missed_draws,partial_draws,nearmiss_slots,held_draws,"
             "held_mm,early_posed,early_skipped,l_error_mm,deck_feet_mm,deck_feet_h_mm,object_mm,nm_bone,nm_pass,nm_rot,"
             "nm_move_mm,camera_updates,camera_tick,snake_rel_x,snake_rel_y,snake_rel_z,deck_rel_x,deck_rel_y,"
-            "deck_rel_z,root_x,root_y,root_z,deck_y,speed,camera_mm,L_x,L_y,L_z,eye_moved,target_moved,L_eye,L_target,snap_error_mm\n");
+            "deck_rel_z,root_x,root_y,root_z,deck_y,speed,camera_mm,L_x,L_y,L_z,eye_moved,target_moved,L_eye,L_target,snap_error_mm,deck_sx,deck_sy,snake_sx,snake_sy\n");
     for (const FrameMetric& e : g_metrics) {
-      fprintf(file, "%llu,%.2f,%d,%llu,%d,%d,%d,%d,%d,%d,%d,%.1f,%d,%d,%.1f,%.1f,%.1f,%.1f,%d,%d,%.3f,%.1f,%llu,%llu,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
+      fprintf(file, "%llu,%.2f,%d,%llu,%d,%d,%d,%d,%d,%d,%d,%.1f,%d,%d,%.1f,%.1f,%.1f,%.1f,%d,%d,%.3f,%.1f,%llu,%llu,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
               static_cast<unsigned long long>(e.frame), e.ms, e.skating ? 1 : 0,
               static_cast<unsigned long long>(e.tick), e.draws, e.posed_slots, e.near_draws, e.missed_draws,
               e.partial_draws, e.nearmiss_slots, e.held_draws, e.held_mm, e.early_posed, e.early_skipped,
@@ -1690,7 +1704,7 @@ void note_frame_metrics() {
               static_cast<unsigned long long>(e.camera_tick), e.snake_rel[0], e.snake_rel[1], e.snake_rel[2],
               e.deck_rel[0], e.deck_rel[1], e.deck_rel[2], e.root[0], e.root[1], e.root[2], e.deck_y, e.speed,
               e.camera_mm, e.L[0], e.L[1], e.L[2], e.eye_moved, e.target_moved, e.L_eye, e.L_target,
-              e.snap_error_mm);
+              e.snap_error_mm, e.deck_sx, e.deck_sy, e.snake_sx, e.snake_sy);
     }
     fclose(file);
   }
@@ -2117,6 +2131,71 @@ bool probe_scene_depth(ID3D11DeviceContext* c, float px, float py, float& out) {
 
 ULONGLONG g_depth_debug_at = 0;
 
+// The frame that just ended: its metrics row gets the deck's and Snake's screen positions (through
+// the game camera it was drawn with), and the CSV is written once the run is complete.
+void finish_metrics_frame(UINT width, UINT height) {
+  Mat pers, view;
+  uint32_t uses = 0;
+  const bool have_camera = captured_camera(pers, view, uses);
+  std::lock_guard lock(g_cap_mutex);
+  if (g_metrics.empty()) return;
+  FrameMetric& m = g_metrics.back();
+  if (have_camera && width > 0 && height > 0 && std::isnan(m.deck_sx)) {
+    const Mat vp = mul(pers, view);
+    auto project = [&](const float p[3], float& sx, float& sy) {
+      float clip[4];
+      for (int i = 0; i < 4; ++i) clip[i] = vp.at(i, 0) * p[0] + vp.at(i, 1) * p[1] + vp.at(i, 2) * p[2] + vp.at(i, 3);
+      if (clip[3] <= 0.f) return;
+      sx = (clip[0] / clip[3] + 1.f) * 0.5f * static_cast<float>(width);
+      sy = (1.f - clip[1] / clip[3]) * 0.5f * static_cast<float>(height);
+    };
+    if (g_frame_board_valid) {
+      const float deck[3] = {g_frame_board[MGSK_BODY_DECK * 16 + 12] * 1000.f, g_frame_board[MGSK_BODY_DECK * 16 + 13] * 1000.f,
+                             g_frame_board[MGSK_BODY_DECK * 16 + 14] * 1000.f};
+      project(deck, m.deck_sx, m.deck_sy);
+    }
+    if (!std::isnan(m.root[0])) project(m.root, m.snake_sx, m.snake_sy);
+  }
+  if (g_metrics_write) write_metrics();
+}
+
+// `render stamp on`: the frame number (the metrics `frame`) in the top-left corner as 24 blocks
+// of 12x12 px: white, black (sync), then 22 bits, least significant first (white = 1). Written
+// straight into the back buffer (UpdateSubresource; 8-bit-per-channel formats only).
+constexpr int kStampCell = 12, kStampBits = 22;
+void stamp_frame(ID3D11DeviceContext* c, ID3D11Texture2D* back) {
+  D3D11_TEXTURE2D_DESC td{};
+  back->GetDesc(&td);
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    log("render: stamp: back buffer %ux%u format %d samples %u usage %d bind 0x%X", td.Width, td.Height,
+        static_cast<int>(td.Format), td.SampleDesc.Count, static_cast<int>(td.Usage), td.BindFlags);
+  }
+  if (td.SampleDesc.Count != 1 || td.Height < kStampCell + 8) return;
+  uint64_t frame;
+  {
+    std::lock_guard lock(g_cap_mutex);
+    frame = g_metrics_frame;
+  }
+  static uint32_t white[kStampCell * kStampCell], black[kStampCell * kStampCell];
+  for (uint32_t& p : white) p = 0xFFFFFFFFu;
+  for (uint32_t& p : black) p = 0xFF000000u;
+  // Top-left: the bottom rows of the back buffer don't reach the window here (MGS3/MGSHDFix).
+  constexpr UINT top = 4;
+  // Two identical rows: a capture that caught the frame mid-update reads them differently.
+  for (UINT row = 0; row < 2; ++row) {
+    const UINT y = top + row * (kStampCell + 4);
+    auto cell = [&](int i, bool on) {
+      const D3D11_BOX box{4u + i * kStampCell, y, 0, 4u + (i + 1) * kStampCell, y + kStampCell, 1};
+      c->UpdateSubresource(back, 0, &box, on ? white : black, kStampCell * 4, 0);
+    };
+    cell(0, true);
+    cell(1, false);
+    for (int b = 0; b < kStampBits; ++b) cell(2 + b, (frame >> b) & 1);
+  }
+}
+
 void frame(IDXGISwapChain* swap) {
   g_presents.fetch_add(1, std::memory_order_relaxed);
   ComPtr<ID3D11Device> device;
@@ -2126,6 +2205,16 @@ void frame(IDXGISwapChain* swap) {
   install_capture(c.Get());
   end_capture_frame();
   const Settings s = settings();
+  {
+    DXGI_SWAP_CHAIN_DESC sd{};
+    if (SUCCEEDED(swap->GetDesc(&sd))) {
+      finish_metrics_frame(sd.BufferDesc.Width, sd.BufferDesc.Height);
+      if (s.stamp) {
+        ComPtr<ID3D11Texture2D> back;
+        if (SUCCEEDED(swap->GetBuffer(0, IID_PPV_ARGS(&back)))) stamp_frame(c.Get(), back.Get());
+      }
+    }
+  }
   // The camera the frame that just ended was drawn from, and the one for the next frame.
   Mat skate_vp;
   uint64_t replaced = 0, early = 0;
