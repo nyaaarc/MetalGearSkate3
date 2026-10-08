@@ -425,6 +425,8 @@ bool freeze_snake(bool frozen) {
   return true;
 }
 
+bool snake_frozen() { return g_shared && g_shared->frozen.control; }
+
 const uint8_t* snake_render_object() {
   if (!g_snake_control || !*g_snake_control) return nullptr;
   return *g_snake_control + kRenderObject;

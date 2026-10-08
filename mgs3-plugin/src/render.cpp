@@ -1758,11 +1758,110 @@ void end_skin_frame() {
   g_skin.snap_provisional = false;
 }
 
+// ---- constant-buffer scan (`render cbscan now`): which buffers carry Snake's bones ----------
+// For one frame every mapped or updated constant buffer, of any size, is searched for 3x3 blocks
+// equal (within 0.05) to his bones' rotations, the game's or ours, stored as rows or columns.
+// The log gets one line per buffer size: how many blocks matched and where. Finds passes that
+// don't use $Globals (e.g. the stealth camouflage). Guarded by g_cap_mutex.
+int g_cbscan_state = 0;  // 0 idle, 1 requested, 2 recording this frame
+struct CbPending {
+  ID3D11Resource* res = nullptr;
+  uint8_t* data = nullptr;
+  UINT size = 0;
+};
+CbPending g_cb_pending[16];
+float g_cbscan_bones[2][kSnakeBones * 16];
+bool g_cbscan_have[2] = {};
+struct CbStat {
+  UINT size = 0;
+  uint64_t buffers = 0, hit_buffers = 0, hits[2][2] = {};  // [game/ours][rows/columns]
+  UINT first_offset = UINT_MAX;
+};
+std::vector<CbStat> g_cbscan;
+
+UINT cb_size(ID3D11Resource* res) {
+  D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+  res->GetType(&dim);
+  if (dim != D3D11_RESOURCE_DIMENSION_BUFFER) return 0;
+  D3D11_BUFFER_DESC d;
+  static_cast<ID3D11Buffer*>(res)->GetDesc(&d);
+  return (d.BindFlags & D3D11_BIND_CONSTANT_BUFFER) ? d.ByteWidth : 0;
+}
+
+void cbscan(const uint8_t* data, UINT size) {
+  CbStat* stat = nullptr;
+  for (CbStat& e : g_cbscan) {
+    if (e.size == size) stat = &e;
+  }
+  if (!stat) {
+    g_cbscan.push_back({size});
+    stat = &g_cbscan.back();
+  }
+  ++stat->buffers;
+  bool any = false;
+  for (UINT o = 0; o + 48 <= size; o += 16) {
+    float f[12];
+    memcpy(f, data + o, sizeof(f));
+    if (!std::isfinite(f[0]) || std::fabs(f[0]) > 1.01f) continue;
+    for (int set = 0; set < 2; ++set) {
+      if (!g_cbscan_have[set]) continue;
+      for (int b = 0; b < kSnakeBones; ++b) {
+        const float* m = g_cbscan_bones[set] + b * 16;  // rows: X, Y, Z axis
+        for (int layout = 0; layout < 2; ++layout) {
+          float err = 0;
+          for (int r = 0; r < 3 && err < 0.05f; ++r) {
+            for (int c = 0; c < 3; ++c) err += std::fabs(f[r * 4 + c] - (layout == 0 ? m[c * 4 + r] : m[r * 4 + c]));
+          }
+          if (err < 0.05f) {
+            ++stat->hits[set][layout];
+            stat->first_offset = std::min(stat->first_offset, o);
+            any = true;
+          }
+        }
+      }
+    }
+  }
+  if (any) ++stat->hit_buffers;
+}
+
+void begin_cbscan() {
+  float origin[3], object[16];
+  bool relative = false;
+  g_cbscan_have[0] = pose::game_bones(g_cbscan_bones[0], origin, object, relative);
+  g_cbscan_have[1] = pose::current(g_cbscan_bones[1]);
+  g_cbscan.clear();
+}
+
+void end_cbscan() {
+  log("render: cbscan: %zu buffer sizes (bones: game %d, ours %d)", g_cbscan.size(), g_cbscan_have[0] ? 1 : 0,
+      g_cbscan_have[1] ? 1 : 0);
+  for (const CbStat& e : g_cbscan) {
+    log("render: cbscan: size %u: %llu buffers, %llu with his bones; blocks game rows %llu cols %llu, ours rows "
+        "%llu cols %llu; first at byte %d",
+        e.size, static_cast<unsigned long long>(e.buffers), static_cast<unsigned long long>(e.hit_buffers),
+        static_cast<unsigned long long>(e.hits[0][0]), static_cast<unsigned long long>(e.hits[0][1]),
+        static_cast<unsigned long long>(e.hits[1][0]), static_cast<unsigned long long>(e.hits[1][1]),
+        e.first_offset == UINT_MAX ? -1 : static_cast<int>(e.first_offset));
+  }
+}
+
 HRESULT STDMETHODCALLTYPE on_map(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub, D3D11_MAP type, UINT flags,
                                  D3D11_MAPPED_SUBRESOURCE* out) {
   hooks::Guard guard;
   const HRESULT hr = g_map_hook.stdcall<HRESULT>(c, res, sub, type, flags, out);
   if (hooks::stopping()) return hr;
+  if (SUCCEEDED(hr) && c == g_cap_context && sub == 0 && out && out->pData && type != D3D11_MAP_READ &&
+      g_cbscan_state == 2) {
+    if (const UINT size = cb_size(res)) {
+      std::lock_guard lock(g_cap_mutex);
+      for (CbPending& p : g_cb_pending) {
+        if (!p.res || p.res == res) {
+          p = {res, static_cast<uint8_t*>(out->pData), size};
+          break;
+        }
+      }
+    }
+  }
   if (SUCCEEDED(hr) && c == g_cap_context && sub == 0 && out && out->pData && type != D3D11_MAP_READ &&
       is_globals(res)) {
     std::lock_guard lock(g_cap_mutex);
@@ -1783,6 +1882,15 @@ void STDMETHODCALLTYPE on_unmap(ID3D11DeviceContext* c, ID3D11Resource* res, UIN
   // memory the driver has already reused).
   if (c == g_cap_context && sub == 0 && !hooks::stopping()) {
     std::lock_guard lock(g_cap_mutex);
+    if (g_cbscan_state == 2) {
+      for (CbPending& p : g_cb_pending) {
+        if (p.res == res) {
+          cbscan(p.data, p.size);  // before posing: what the game wrote
+          p = {};
+          break;
+        }
+      }
+    }
     for (Pending& p : g_pending_maps) {
       if (p.res == res) {
         tally(p.data);  // the game has written the whole buffer by now
@@ -1803,6 +1911,13 @@ void STDMETHODCALLTYPE on_unmap(ID3D11DeviceContext* c, ID3D11Resource* res, UIN
 void STDMETHODCALLTYPE on_update(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub, const D3D11_BOX* box,
                                  const void* src, UINT row_pitch, UINT depth_pitch) {
   hooks::Guard guard;
+  if (c == g_cap_context && sub == 0 && src && !hooks::stopping() && g_cbscan_state == 2) {
+    if (const UINT size = cb_size(res)) {
+      std::lock_guard lock(g_cap_mutex);
+      const UINT left = box ? box->left : 0, right = box ? box->right : size;
+      if (right > left) cbscan(static_cast<const uint8_t*>(src), right - left);
+    }
+  }
   if (c == g_cap_context && sub == 0 && src && is_globals(res) && !hooks::stopping()) {
     std::lock_guard lock(g_cap_mutex);
     ++g_cap_updates;
@@ -1854,6 +1969,13 @@ void end_capture_frame() {
     g_dump_state = 0;
   } else if (g_dump_state == 1) {
     g_dump_state = 2;
+  }
+  if (g_cbscan_state == 2) {
+    end_cbscan();
+    g_cbscan_state = 0;
+  } else if (g_cbscan_state == 1) {
+    begin_cbscan();
+    g_cbscan_state = 2;
   }
   g_ovr_used = g_ovr_active;
   g_ovr_used_vp = g_ovr_vp;
@@ -2563,6 +2685,11 @@ void start(const std::filesystem::path& plugin_dir, HMODULE ffi) {
 }
 
 std::string set(const std::string& key, const std::string& value) {
+  if (key == "cbscan") {  // `render cbscan now`: log which constant buffers carry Snake's bones
+    std::lock_guard lock(g_cap_mutex);
+    g_cbscan_state = 1;
+    return "ok scanning next frame";
+  }
   if (key == "palette") {  // `render palette now`: dump the next frame's skinned draws
     std::lock_guard lock(g_cap_mutex);
     g_dump_state = 1;

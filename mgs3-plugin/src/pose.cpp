@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -80,6 +81,62 @@ bool is_snake(const uint8_t* obj, const float origin[3], bool& relative) {
   return best < kMaxDistanceMm * kMaxDistanceMm;
 }
 
+// Render objects attached to Snake (held weapon, items) while he is frozen for skating. They hang
+// from his frozen object (where he got on the board), so far from there the game culls them by
+// their own bounds and the held weapon isn't drawn at all. Their bounds are made huge, like his
+// (game::freeze_snake), and put back when he stops. Guarded by g_mutex.
+constexpr size_t kObjModel = 0x00, kObjBounds = 0x120, kObjBoundsSize = 0x30, kObjRadius = 0x14C;
+constexpr float kAttachedMm = 2500.f, kHugeBoundsMm = 1.0e7f;
+struct Inflated {
+  uint8_t* obj = nullptr;
+  void* model = nullptr;
+  uint8_t bounds[kObjBoundsSize] = {};
+};
+std::array<Inflated, 16> g_inflated;
+int g_inflated_count = 0;
+
+// Bounds that look like a render object's: max >= min on each axis and a plausible radius.
+bool plausible_bounds(const uint8_t* obj) {
+  float b[6], radius = 0;
+  memcpy(b, obj + kObjBounds, sizeof(b));
+  memcpy(&radius, obj + kObjRadius, sizeof(radius));
+  for (int i = 0; i < 3; ++i) {
+    if (!std::isfinite(b[i]) || !std::isfinite(b[3 + i]) || b[i] < b[3 + i] || std::fabs(b[i]) > 1e6f) return false;
+  }
+  return radius > 1.f && radius < 20000.f;
+}
+
+void keep_drawn(uint8_t* obj, int count) {
+  for (int i = 0; i < g_inflated_count; ++i) {
+    if (g_inflated[i].obj == obj) return;
+  }
+  if (g_inflated_count >= static_cast<int>(g_inflated.size()) || !plausible_bounds(obj)) return;
+  Inflated& e = g_inflated[g_inflated_count++];
+  e.obj = obj;
+  memcpy(&e.model, obj + kObjModel, sizeof(e.model));
+  memcpy(e.bounds, obj + kObjBounds, sizeof(e.bounds));
+  const float huge_max[3] = {kHugeBoundsMm, kHugeBoundsMm, kHugeBoundsMm};
+  const float huge_min[3] = {-kHugeBoundsMm, -kHugeBoundsMm, -kHugeBoundsMm};
+  memcpy(obj + kObjBounds, huge_max, sizeof(huge_max));
+  memcpy(obj + kObjBounds + 0x10, huge_min, sizeof(huge_min));
+  memcpy(obj + kObjRadius, &kHugeBoundsMm, sizeof(float));
+  log("pose: keeping attached object %p (bones %d) drawn while skating", static_cast<void*>(obj), count);
+}
+
+// Puts their bounds back (only on objects that still look like the ones we changed).
+void release_attached() {
+  for (int i = 0; i < g_inflated_count; ++i) {
+    Inflated& e = g_inflated[i];
+    void* model = nullptr;
+    float radius = 0;
+    memcpy(&model, e.obj + kObjModel, sizeof(model));
+    memcpy(&radius, e.obj + kObjRadius, sizeof(radius));
+    if (model == e.model && radius == kHugeBoundsMm) memcpy(e.obj + kObjBounds, e.bounds, sizeof(e.bounds));
+    e = {};
+  }
+  g_inflated_count = 0;
+}
+
 void __fastcall on_bone_pass(uint8_t* obj, void* arg2) {
   hooks::Guard guard;
   if (hooks::stopping()) return g_hook.call<void>(obj, arg2);
@@ -87,6 +144,18 @@ void __fastcall on_bone_pass(uint8_t* obj, void* arg2) {
   int count = 0;
   memcpy(&count, obj + kObjBoneCount, sizeof(count));
   g_last_count.store(count, std::memory_order_relaxed);
+  if (const uint8_t* snake_obj = game::snake_render_object(); snake_obj && obj != snake_obj) {
+    std::lock_guard lock(g_mutex);
+    if (game::snake_frozen()) {
+      float a[3], b[3];
+      memcpy(a, obj + kObjTranslation, sizeof(a));
+      memcpy(b, snake_obj + kObjTranslation, sizeof(b));
+      const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+      if (dx * dx + dy * dy + dz * dz < kAttachedMm * kAttachedMm) keep_drawn(obj, count);
+    } else if (g_inflated_count) {
+      release_attached();
+    }
+  }
   if (count == kSnakeBones) {
     std::lock_guard lock(g_mutex);
     float origin[3] = {0, 0, 0};
@@ -125,6 +194,7 @@ void disable_hooks() { hooks::disable(g_hook); }
 void stop() {
   hooks::release(g_hook);
   std::lock_guard lock(g_mutex);
+  release_attached();
   g_active = false;
 }
 

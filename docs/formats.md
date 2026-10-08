@@ -480,7 +480,26 @@ shadow-like draws) appeared in this frame.
   origin 25 mm from our joint 42 (73 mm from 43, as the game has it). While he skates the
   weapon's own draw is culled by the game when his frozen object is far from the camera (e.g.
   after `skate on` far from where he got on), so it isn't drawn there at all.
-- **Snake's shadow:** not in the $Globals stream. After posing, no $Globals palette slot anywhere
-  in a frame is left on his game bones (`render dump_after 1` + `render palette now`), and there
-  are no UpdateSubresource writes; whatever draws the shadow (users see a running-cycle shape
-  under him) uses another constant buffer. Not found yet.
+- **Snake's shadow and other passes (frozen actor, run of 2026-10-08 evening):** the light/shadow
+  passes are $Globals draws too, with an orthographic `gVS_Pers` (row 3 = `(0, 0, 0, 1)`) or a
+  perspective one that isn't the main camera's. Their palette slots are relative to his render
+  object's origin like the main draws, and they already carry *our* posed rotations (pre-posing
+  dumps of s091a: 183 of Snake's slots in ortho draws, all ours, none the game's): the game
+  builds those passes from palette data the main pass already got, so they follow the skate pose
+  without being rewritten. (The earlier "running shadow" was from before his actor was frozen.)
+  `render cbscan now` logs, for one frame, every constant buffer of any size whose contents hold
+  his bones' rotations (game's or ours, rows or columns): only the 5120-byte $Globals buffers
+  do; the 192- and 16-byte buffers never.
+- **Stealth camouflage while skating:** with the camo item on, his draws stop altogether a few
+  seconds in (no constant buffer carries his bones, `render cbscan`), so he is simply invisible:
+  nothing to pose. Probably the camo effect is driven by his actor, which is frozen while he
+  skates. Stealth stays off by default.
+- **Attached objects and culling:** while he is frozen, any other render object within 2.5 m of
+  his frozen object (held weapon, items) gets the same huge bounds as his own so the game doesn't
+  cull it when he rides away from where he got on (pose.cpp keep_drawn; put back when he stops,
+  only on objects whose model pointer and radius are still ours).
+- **Game crash at `exe+0x115F64` (reading 0):** in a function called from the input code
+  (`exe+110E92`, near the pad copy at `exe+111C80`) that fetches an interface and walks 16 digital
+  and 4 analog handles through its vtable (+0x80, +0xA0). Seen twice (once in Windows' crash log
+  before this work, once after a stealth toggle while skating with the harness switching focus);
+  looks like a null controller/Steam Input interface, not our code.

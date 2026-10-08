@@ -54,6 +54,9 @@ bool freeze_snake(bool frozen);
 // Snake's render object (his actor's, at a fixed offset from his control block), or nullptr.
 const uint8_t* snake_render_object();
 
+// True while his actor is frozen for skating (freeze_snake).
+bool snake_frozen();
+
 // The game camera's eye and look-at points (mm, y up), read from the static camera object at
 // exe+1D39D80 (MC 3.0.0 only; no signature yet). False when they don't look like positions.
 bool camera(Vec3& eye, Vec3& look_at);
