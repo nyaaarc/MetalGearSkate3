@@ -19,6 +19,7 @@
 
 #include <safetyhook.hpp>
 
+#include "camera.hpp"
 #include "game.hpp"
 #include "log.hpp"
 #include "pose.hpp"
@@ -64,8 +65,10 @@ struct Settings {
   // skate: while skating, the whole frame is drawn from the Skate 3 engine's chase camera (the
   //        game's camera constants are rewritten), otherwise as `game`;
   // game:   the game's own view-projection (captured), untouched;
-  // object: the old guess, camera object + fov_deg/near_mm/far_mm/aspect/flip_z.
-  enum class Camera { Skate, Game, Object } camera = Camera::Skate;
+  // object: the old guess, camera object + fov_deg/near_mm/far_mm/aspect/flip_z;
+  // drive:  the game's own camera, moved onto the skate camera (camera.cpp), so the game draws
+  //         and culls the scene from there itself; drawn like `game`.
+  enum class Camera { Skate, Game, Object, Drive } camera = Camera::Skate;
   float skate_fov_deg = 0.f;  // vertical fov for the skate camera; 0 = the engine's
 };
 
@@ -82,7 +85,10 @@ std::string describe(const Settings& s) {
   snprintf(text, sizeof(text),
            "camera=%s skate_fov_deg=%.1f fov_deg=%.2f near_mm=%.1f far_mm=%.0f aspect=%.4f flip_z=%d depth_game=%d "
            "depth_bias=%.4f depth_debug=%d textures=%d debug=%d",
-           s.camera == Settings::Camera::Skate ? "skate" : s.camera == Settings::Camera::Game ? "game" : "object",
+           s.camera == Settings::Camera::Skate  ? "skate"
+           : s.camera == Settings::Camera::Game ? "game"
+           : s.camera == Settings::Camera::Drive ? "drive"
+                                                 : "object",
            s.skate_fov_deg, s.fov_deg, s.near_mm, s.far_mm, s.aspect, s.flip_z ? 1 : 0,
            s.depth_game ? 1 : 0, s.depth_bias, s.depth_debug ? 1 : 0, s.textures ? 1 : 0, s.debug ? 1 : 0);
   return text;
@@ -121,7 +127,9 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
     if (value == "skate") n.camera = Settings::Camera::Skate;
     else if (value == "game") n.camera = Settings::Camera::Game;
     else if (value == "object") n.camera = Settings::Camera::Object;
+    else if (value == "drive") n.camera = Settings::Camera::Drive;
     else ok = false;
+    if (ok) camera::set_driving(n.camera == Settings::Camera::Drive);
   }
   else if (key == "skate_fov_deg") ok = parse_float(value, n.skate_fov_deg) && n.skate_fov_deg >= 0.f && n.skate_fov_deg < 170.f;
   else return "unknown key (camera skate_fov_deg fov_deg near_mm far_mm aspect flip_z depth_game depth_bias depth_debug textures debug)";

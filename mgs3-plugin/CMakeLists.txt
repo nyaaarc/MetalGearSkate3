@@ -17,7 +17,7 @@ set(SAFETYHOOK_FETCH_ZYDIS ON CACHE BOOL "" FORCE)
 FetchContent_Declare(safetyhook GIT_REPOSITORY https://github.com/cursey/safetyhook.git GIT_TAG v0.7.0)
 FetchContent_MakeAvailable(safetyhook)
 
-add_library(MetalGearSkate SHARED src/main.cpp src/control.cpp src/game.cpp src/hang.cpp src/log.cpp src/pose.cpp src/render.cpp src/skate.cpp src/watch.cpp)
+add_library(MetalGearSkate SHARED src/main.cpp src/camera.cpp src/control.cpp src/game.cpp src/hang.cpp src/log.cpp src/pose.cpp src/render.cpp src/skate.cpp src/watch.cpp)
 # The C API the skate engine DLL exports.
 target_include_directories(MetalGearSkate PRIVATE ../skate-ffi/include)
 # Ultimate ASI Loader picks up *.asi files from the game folder.

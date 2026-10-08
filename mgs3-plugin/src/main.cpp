@@ -10,6 +10,7 @@
 
 #include <filesystem>
 
+#include "camera.hpp"
 #include "control.hpp"
 #include "hang.hpp"
 #include "game.hpp"
@@ -65,6 +66,7 @@ DWORD WINAPI init(LPVOID) {
   for (int attempt = 0; attempt < 120 && !(found = game::init()); ++attempt) Sleep(1000);
   if (!found) return 0;
   pose::init();
+  camera::init();
   skate::start(dir, ffi);
   render::start(dir, ffi);
   control::start(dir);
