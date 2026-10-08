@@ -17,7 +17,7 @@ set(SAFETYHOOK_FETCH_ZYDIS ON CACHE BOOL "" FORCE)
 FetchContent_Declare(safetyhook GIT_REPOSITORY https://github.com/cursey/safetyhook.git GIT_TAG v0.7.0)
 FetchContent_MakeAvailable(safetyhook)
 
-add_library(MetalGearSkate SHARED src/main.cpp src/control.cpp src/game.cpp src/log.cpp src/pose.cpp src/render.cpp src/skate.cpp src/watch.cpp)
+add_library(MetalGearSkate SHARED src/main.cpp src/control.cpp src/game.cpp src/hang.cpp src/log.cpp src/pose.cpp src/render.cpp src/skate.cpp src/watch.cpp)
 # The C API the skate engine DLL exports.
 target_include_directories(MetalGearSkate PRIVATE ../skate-ffi/include)
 # Ultimate ASI Loader picks up *.asi files from the game folder.
@@ -25,3 +25,5 @@ set_target_properties(MetalGearSkate PROPERTIES SUFFIX ".asi")
 target_compile_definitions(MetalGearSkate PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_compile_options(MetalGearSkate PRIVATE /W4 /permissive-)
 target_link_libraries(MetalGearSkate PRIVATE safetyhook::safetyhook)
+# A map file, to turn the hang watchdog's MetalGearSkate.asi+offset frames into functions.
+target_link_options(MetalGearSkate PRIVATE /MAP)

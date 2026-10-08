@@ -11,6 +11,7 @@
 #include <filesystem>
 
 #include "control.hpp"
+#include "hang.hpp"
 #include "game.hpp"
 #include "log.hpp"
 #include "pose.hpp"
@@ -67,6 +68,7 @@ DWORD WINAPI init(LPVOID) {
   skate::start(dir, ffi);
   render::start(dir, ffi);
   control::start(dir);
+  hang::start(dir);
 
   // Log Snake's position whenever it moves by more than half a metre (to verify the lookup).
   game::Vec3 last{};
