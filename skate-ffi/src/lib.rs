@@ -13,6 +13,7 @@ use std::sync::Mutex;
 use skate_host::bridge::{Controls, Session};
 
 mod board;
+mod floor;
 mod geom;
 mod rails;
 mod retarget;
@@ -34,6 +35,13 @@ static EXTRAS: Mutex<std::collections::BTreeMap<usize, Extra>> = Mutex::new(std:
 
 /// Grind rails installed by the last `mgsk_install_geom`, keyed by session address.
 static RAIL_COUNTS: Mutex<std::collections::BTreeMap<usize, i32>> = Mutex::new(std::collections::BTreeMap::new());
+
+/// Floor lookup over the collision last installed, keyed by session address.
+static FLOORS: Mutex<std::collections::BTreeMap<usize, floor::Floor>> = Mutex::new(std::collections::BTreeMap::new());
+
+fn floors() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<usize, floor::Floor>> {
+    FLOORS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn rail_counts() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<usize, i32>> {
     RAIL_COUNTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -125,6 +133,7 @@ pub unsafe extern "C" fn mgsk_session_free(session: *mut Session) {
         guard((), || {
             extras().remove(&(session as usize));
             rail_counts().remove(&(session as usize));
+            floors().remove(&(session as usize));
             drop(unsafe { Box::from_raw(session) });
             Ok(())
         });
@@ -154,10 +163,11 @@ fn triangles_from(triangles: *const f32, count: u32) -> Result<Vec<[[f32; 3]; 3]
 pub unsafe extern "C" fn mgsk_install_world(session: *mut Session, triangles: *const f32, triangle_count: u32) -> i32 {
     guard(-1, || {
         let session = unsafe { session.as_mut() }.ok_or("null session")?;
-        let prepared = session
-            .collision_builder()
-            .build(triangles_from(triangles, triangle_count)?, Vec::new())?;
+        let triangles = triangles_from(triangles, triangle_count)?;
+        let floor = floor::Floor::new(&triangles);
+        let prepared = session.collision_builder().build(triangles, Vec::new())?;
         session.install_collision(prepared)?;
+        floors().insert(std::ptr::from_mut(session) as usize, floor);
         Ok(0)
     })
 }
@@ -201,9 +211,11 @@ pub unsafe extern "C" fn mgsk_install_geom(session: *mut Session, geom_path: *co
         let count = count_i32(tris.len())?;
         let rails = geom_rails(&tris, units_per_mm);
         let rail_count = count_i32(rails.len())?;
+        let floor = floor::Floor::new(&tris);
         let prepared = session.collision_builder().build(tris, rails)?;
         session.install_collision(prepared)?;
         rail_counts().insert(std::ptr::from_mut(session) as usize, rail_count);
+        floors().insert(std::ptr::from_mut(session) as usize, floor);
         Ok(count)
     })
 }
@@ -226,6 +238,27 @@ pub unsafe extern "C" fn mgsk_rail_count(session: *const Session) -> i32 {
     guard(-1, || {
         let session = unsafe { session.as_ref() }.ok_or("null session")?;
         Ok(rail_counts().get(&(std::ptr::from_ref(session) as usize)).copied().unwrap_or(0))
+    })
+}
+
+/// The highest floor of the installed collision straight below (x, y, z), engine units: writes
+/// its height to `out_y` and returns 1, or returns 0 when there is none (off the stage), -1 on
+/// failure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgsk_floor_below(session: *const Session, x: f32, y: f32, z: f32, out_y: *mut f32) -> i32 {
+    guard(-1, || {
+        let session = unsafe { session.as_ref() }.ok_or("null session")?;
+        let floors = floors();
+        let found = floors.get(&(std::ptr::from_ref(session) as usize)).and_then(|f| f.below(x, y, z));
+        match found {
+            Some(h) => {
+                if !out_y.is_null() {
+                    unsafe { *out_y = h };
+                }
+                Ok(1)
+            }
+            None => Ok(0),
+        }
     })
 }
 

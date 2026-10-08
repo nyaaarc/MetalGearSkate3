@@ -56,6 +56,7 @@ The stage's real collision is loaded on F5; the board is drawn in flat colours, 
   game's own pad state, so any Steam Input controller works; Snake faces the direction of travel.
 - Stage collision: `.geom` decoded (`tools/geom.py`, Rust `skate-ffi/src/geom.rs`, identical output);
   the current stage's collision is loaded into the engine on F5.
+- Riding off the stage puts the skater back where he last rode (Snake would otherwise fall to his death).
 - Bails no longer break the engine: a subnormal dot product (which the Xbox 360 flushed to zero)
   turned into NaN on the landing after a bail respawn; it is flushed now. If the engine still
   fails, the plugin swaps in a spare session built in the background and resumes at the last spot.

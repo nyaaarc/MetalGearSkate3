@@ -34,6 +34,9 @@ constexpr float kFloorHalf = 150.f;
 constexpr int kToggleKey = VK_F5;
 // A skater this far (engine units) below where he last rode has left the stage's collision.
 constexpr float kFallLimit = 3.f;
+// Over no floor, or this far (engine units) above the nearest, the skater has left the stage. MGS3
+// starts Snake's fall (and kills him) as soon as there's no ground under him, so act at once.
+constexpr float kMaxDrop = 4.f;
 
 struct Ffi {
   decltype(&mgsk_session_new) session_new;
@@ -349,6 +352,8 @@ DWORD WINAPI run(LPVOID) {
   if (!pose_fn) log("skate: skate_ffi.dll has no mgsk_board_pose; the board won't be drawn");
   const auto camera_fn = reinterpret_cast<decltype(&mgsk_camera)>(GetProcAddress(g_ffi_module, "mgsk_camera"));
   if (!camera_fn) log("skate: skate_ffi.dll has no mgsk_camera; the game camera stays");
+  const auto floor_fn = reinterpret_cast<decltype(&mgsk_floor_below)>(GetProcAddress(g_ffi_module, "mgsk_floor_below"));
+  if (!floor_fn) log("skate: skate_ffi.dll has no mgsk_floor_below; only deep falls are caught");
   float snake_bones[pose::kSnakeBones * 16];
   bool stealth_enabled = ini_string("stealth_while_skating", "1") != "0";
   Stealth stealth;
@@ -513,9 +518,12 @@ DWORD WINAPI run(LPVOID) {
     }
     // Off the edge of the stage's collision the skater falls forever, and a Snake written far
     // below the floor dies (game over). Put him back where he last rode instead.
-    if (m[13] < last_good.at[1] - kFallLimit) {
-      log("skate: fell to %.2f m below %.2f; back to %.2f %.2f %.2f (m)", m[13], last_good.at[1], last_good.at[0],
-          last_good.at[1], last_good.at[2]);
+    float floor_y = 0.f;
+    const int floor_found = floor_fn ? floor_fn(session, m[12], m[13] + 0.5f, m[14], &floor_y) : 1;
+    const bool off_stage = floor_found == 0 || (floor_found == 1 && floor_fn && m[13] - floor_y > kMaxDrop);
+    if (off_stage || m[13] < last_good.at[1] - kFallLimit) {
+      log("skate: left the stage at %.2f %.2f %.2f (floor %s); back to %.2f %.2f %.2f (m)", m[12], m[13], m[14],
+          floor_found == 1 ? "far below" : "none", last_good.at[0], last_good.at[1], last_good.at[2]);
       if (f.activate(session, last_good.at, last_good.heading) || f.root(session, m)) {
         log("skate: respawn failed: %s", f.last_error());
         continue;

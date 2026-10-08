@@ -60,6 +60,9 @@ int mgsk_install_world(MgskSession* session, const float* triangles, uint32_t tr
 int mgsk_install_geom(MgskSession* session, const char* geom_path, float units_per_mm);
 /* Grind rails the last mgsk_install_geom gave the session (0 before any), or -1. */
 int mgsk_rail_count(const MgskSession* session);
+/* The highest floor of the installed collision straight below (x, y, z), engine units: writes
+ * its height to out_y and returns 1; 0 when there is none (off the stage); -1 on failure. */
+int mgsk_floor_below(const MgskSession* session, float x, float y, float z, float* out_y);
 /* The rails mgsk_install_geom would find in a .geom file, as segments (6 floats: start, end,
  * coordinates as mgsk_install_geom); writes up to capacity, returns the total segment count,
  * or -1. rail_count (may be null) receives the number of rails. For tests and debugging. */
