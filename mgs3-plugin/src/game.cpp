@@ -442,6 +442,14 @@ int16_t* snake_target_yaw() {
 
 uint8_t* linkvar() { return g_linkvarbuf ? *g_linkvarbuf : nullptr; }
 
+int16_t link_short(size_t offset) {
+  const uint8_t* link = linkvar();
+  if (!link) return -1;
+  int16_t value;
+  memcpy(&value, link + offset, sizeof(value));
+  return value;
+}
+
 void disable_hooks() {
   hooks::disable(g_pad_copy_hook);
   hooks::disable(g_set_area_hook);

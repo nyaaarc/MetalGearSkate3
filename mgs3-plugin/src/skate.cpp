@@ -40,8 +40,9 @@ constexpr float kFallLimit = 3.f;
 // Over no floor, or this far (engine units) above the nearest, the skater has left the stage. MGS3
 // starts Snake's fall (and kills him) as soon as there's no ground under him, so act at once.
 constexpr float kMaxDrop = 4.f;
-// The floor is looked for below this far above the root: in a wipeout the root sinks ~0.7 m into it.
-constexpr float kFloorProbe = 1.5f;
+// The floor is looked for below this far above the root: in a wipeout the root sinks into it, up to
+// 1.65 m in the s091a bail recipe (0.5 m step); 1.5 m here turned some of those bails into respawns.
+constexpr float kFloorProbe = 2.5f;
 // MGS3 runs its own gravity on Snake between our writes wherever *its* collision has no floor
 // under him, which can differ from the .geom the skater rides. The game also nudges him a little
 // on ordinary floor (it settles him to its own idea of his height), so only a drop this big
@@ -105,6 +106,8 @@ class Stealth {
 std::atomic<int> g_request{-1};
 // -1 none, 0 off, 1 on: a pending stealth change from the test harness.
 std::atomic<int> g_stealth{-1};
+// Ticks to trace from the next one on (harness `trace <ticks>`), 0 = none pending.
+std::atomic<int> g_trace_request{0};
 // Optional start pose for the next harness "skate on": mm (Snake's waist) and MGS3 heading in
 // degrees. Guarded by g_status_mutex; consumed by the skate thread.
 struct StartAt {
@@ -273,13 +276,15 @@ int16_t axis(uint8_t value, bool flip) {
 
 // The game's own pad state (captured by the pad hook before blanking) works for every controller Steam Input supports (the Steam Controller
 // isn't visible to XInput while the game uses Steam Input). A real XInput pad takes priority.
-MgskControls read_pad() {
+MgskControls read_pad(char* source = nullptr) {
   MgskControls c{};
   // Harness input first: one injected frame per engine tick (frame-exact, as the recipes assume).
   game::Pad injected;
   const bool have_injected = game::take_injected(injected);
   XINPUT_STATE state{};
+  if (source) *source = have_injected ? 'i' : 'g';
   if (!have_injected && XInputGetState(0, &state) == ERROR_SUCCESS) {
+    if (source) *source = 'x';
     const XINPUT_GAMEPAD& g = state.Gamepad;
     c.buttons = g.wButtons;
     c.left_trigger = g.bLeftTrigger;
@@ -518,9 +523,15 @@ DWORD WINAPI run(LPVOID) {
     request_at(g_shared->resume_mm[0], g_shared->resume_mm[1], g_shared->resume_mm[2], g_shared->resume_heading_deg);
     log("skate: resuming the ride after a reload");
   }
+  int trace_left = 0;  // engine ticks still to trace (harness `trace`), to MetalGearSkate.trace.csv
+  std::string trace_rows;
   Clock clock(period);
   while (!g_stop) {
     clock.wait();
+    if (const int n = g_trace_request.exchange(0); n > 0) {
+      trace_left = n;
+      trace_rows = "tick_ms,src,buttons,lx,ly,rx,ry,x,y,z,speed,state\n";
+    }
     const bool key_down = (GetAsyncKeyState(kToggleKey) & 0x8000) != 0;
     if (const int want = g_stealth.exchange(-1); want >= 0) {
       stealth_enabled = want == 1;
@@ -559,7 +570,8 @@ DWORD WINAPI run(LPVOID) {
         publish_pose(nullptr);
         camera::clear_poses();
         stealth.end();
-        log("skate: off");
+        log("skate: off (life %d/%d, alerts %d)", game::link_short(game::kLinkCurrentHealth),
+            game::link_short(game::kLinkMaxHealth), game::link_short(game::kLinkAlertCount));
       } else if (!snake) {
         log("skate: no player to put on a board");
       } else {
@@ -600,8 +612,10 @@ DWORD WINAPI run(LPVOID) {
           written_y = NAN;
           game_falling = 0;
           game_safe = last_good;
-          log("skate: on at %.1f %.1f %.1f (mm), Snake yaw %d -> heading %.1f deg", snake->x, snake->y, snake->z,
-              yaw ? *yaw : 0, heading * 180.f / std::numbers::pi_v<float>);
+          log("skate: on at %.1f %.1f %.1f (mm), Snake yaw %d -> heading %.1f deg (life %d/%d, alerts %d)", snake->x,
+              snake->y, snake->z, yaw ? *yaw : 0, heading * 180.f / std::numbers::pi_v<float>,
+              game::link_short(game::kLinkCurrentHealth), game::link_short(game::kLinkMaxHealth),
+              game::link_short(game::kLinkAlertCount));
         }
       }
     }
@@ -649,7 +663,8 @@ DWORD WINAPI run(LPVOID) {
       continue;
     }
 
-    const MgskControls pad = read_pad();
+    char pad_source = 0;
+    const MgskControls pad = read_pad(&pad_source);
     float m[16];
     if (f.tick(session, &pad) || f.root(session, m)) {
       log("skate: engine error: %s", f.last_error());
@@ -728,6 +743,14 @@ DWORD WINAPI run(LPVOID) {
     st.skater[1] = m[13];
     st.skater[2] = m[14];
     st.heading_deg = heading * 180.f / std::numbers::pi_v<float>;
+    if (trace_left > 0) {
+      char row[192];
+      snprintf(row, sizeof(row), "%lu,%c,%04X,%d,%d,%d,%d,%.4f,%.4f,%.4f,%.3f,%s\n", GetTickCount(), pad_source,
+               pad.buttons, pad.left[0], pad.left[1], pad.right[0], pad.right[1], m[12], m[13], m[14], st.speed_mps,
+               st.engine_state);
+      trace_rows += row;
+      if (--trace_left == 0) std::ofstream(g_plugin_dir / L"MetalGearSkate.trace.csv", std::ios::trunc) << trace_rows;
+    }
     // Respawn spot: a grounded position from 1-2 s ago, so it isn't the edge he just rolled off.
     if (ticks % 60 == 0) {
       if (!std::isnan(riding_spot.heading)) last_good = riding_spot;
@@ -788,6 +811,8 @@ DWORD WINAPI run(LPVOID) {
 void request(bool on) { g_request = on ? 1 : 0; }
 
 void set_stealth(bool on) { g_stealth = on ? 1 : 0; }
+
+void trace(int ticks) { g_trace_request = ticks; }
 
 void request_at(float x_mm, float y_mm, float z_mm, float heading_deg) {
   {

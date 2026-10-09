@@ -95,6 +95,12 @@ int injected_frames_left();
 uint8_t* linkvar();
 constexpr size_t kLinkCurrentItem = 1494;      // short
 constexpr int16_t kItemStealthCamouflage = 0x17;
+constexpr size_t kLinkAlertCount = 56;         // short GM_AlertCount
+constexpr size_t kLinkCurrentHealth = 1668;    // short GM_CurrentHealth
+constexpr size_t kLinkMaxHealth = 1670;        // short GM_MaxHealth
+
+// A short from the link-variable buffer, or -1 without one.
+int16_t link_short(size_t offset);
 
 // The unique match of an IDA-style signature ("48 8B ?? ...") in the game's image, or nullptr.
 uint8_t* find(std::string_view signature);

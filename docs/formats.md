@@ -206,8 +206,16 @@ analogues to find, guided by the MGS2 patterns and the GirianSeed decomp.
 - His standing gameplay height is the floor + 800 mm. While skating the plugin writes the board's
   ride height + 800 (the floor + ~887), so on skate off the game settles him ~87 mm; the plugin
   now puts him on the floor under the board first so that isn't mistaken for a fall.
-- Released off the game's own floor (s091a's out-of-bounds strip, x ≈ -64.6 m), the game moves
-  him back into its play area (to x ≈ -47.3 m, y 800, same z) rather than dropping him.
+- Released on s091a's clear strip (x ≈ -64.6 m) on a direct-loaded stage, he isn't dropped: the
+  game holds him at y 800 while the stage-start auto-run resumes. That run is a waypoint route
+  ((-0.4, 0) m, along z ≈ 8.27 m from x 21.6 to 39 m, round the barrier at x ≈ 49 m, down the ramp
+  at z ≈ 2.8 m into the trench) ending at (62.6, -1.2, 3.06) m; released anywhere, he runs
+  straight at that end point (~3.4 m/s). From the strip (yaw ≈ 51°) the line leaves the floor at
+  (-48.9, -87) m: he falls to y ≈ -117.5 m and dies with his life untouched (a fall death; game
+  over a few seconds later). From the route (x 12-54 m) he gets back to the trench alive.
+- `GM_CurrentHealth`/`GM_MaxHealth` (link-variable +1668/+1670, i16, 200/200 at the start of a
+  direct-loaded s091a) and `GM_AlertCount` (+56), from MGSHDFix's `mgs3_linkvarbuf.hpp`, are in the
+  plugin's state (`life`, `alert_count`).
 - A stage load during boot (stage `init`/`title`) hangs the game in its script interpreter
   (`exe+E5xxx`/`E60D9` recursion): `request_stage` now waits for `select` or a stage.
 

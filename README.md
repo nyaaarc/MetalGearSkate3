@@ -45,6 +45,21 @@ with the game's camera following. See "What works" below.
 Uninstall: delete `plugins\MetalGearSkate.asi`, the `plugins\MetalGearSkate` folder, `plugins\skate_ffi.dll` and `plugins\MetalGearSkate.ini`,
 and the `%LOCALAPPDATA%\MetalGearSkate` folder.
 
+## Controls
+
+**F5** (keyboard) starts or stops skating where Snake stands. On the board, Skate 3's own controls
+(Xbox names; on PlayStation layouts A = cross, B = circle, Y = triangle):
+
+| Input | Does |
+|---|---|
+| A | push |
+| B (hold) | brake |
+| Left stick | steer (carve) |
+| Right stick: pull back, then flick up | ollie (flick up-left: kickflip, up-right: heelflip) |
+| Right stick: push up, then flick back | nollie |
+| Ollie onto a ledge or rail | grind |
+| Y | step off the board and back on |
+
 ## Trying it (developers)
 
 Put `MetalGearSkate.asi`, `skate_ffi.dll`, `MetalGearSkate.core.dll` (as `MetalGearSkate\core.dll`) and a `MetalGearSkate.ini` (see
@@ -87,7 +102,8 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 
 - Skating in game: F5 hands Snake to the Skate 3 engine using the game's own pad state, so any
   Steam Input controller works. Checked in game (run 15, s091a): pushes build 2.7, 4.9, 7.6 m/s;
-  ollie, kickflip, heelflip and nollie leave the ground (~1 m) and land; carving and braking work.
+  ollie, kickflip, heelflip and nollie leave the ground (~1 m) and land; carving works, and holding B
+  brakes (5.6 to 0.1 m/s in 2 s, checked by the regression gate).
   Grinds (50-50 into 5-0 on a ledge) and bails (wipeout, then the engine's respawn) work (run 16).
   Snake is posed from the skater on the board, and the board hides behind the scene and his legs.
 - Stage collision: `.geom` decoded (`tools/geom.py`, Rust `skate-ffi/src/geom.rs`, identical output);

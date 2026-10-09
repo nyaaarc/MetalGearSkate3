@@ -133,6 +133,23 @@ std::string run(const std::string& line) {
     else return "error: type must be i8|i16|i32|f32";
     return text;
   }
+  if (verb == "actordump") {
+    // actordump <label>: Snake's actor work (from his actor header, 0x120 before the control block)
+    // to MetalGearSkate.actor-<label>.bin, for diffing his state between moments.
+    std::string label;
+    if (!(in >> label)) return "error: usage actordump <label>";
+    const game::Vec3* snake = game::snake_position();
+    if (!snake) return "error: no player";
+    const auto* actor = reinterpret_cast<const uint8_t*>(snake) - 0x10 - 0x120;
+    std::string bytes(0x1000, '\0');
+    SIZE_T got = 0;
+    ReadProcessMemory(GetCurrentProcess(), actor, bytes.data(), bytes.size(), &got);
+    bytes.resize(got);
+    std::ofstream(g_dir / ("MetalGearSkate.actor-" + label + ".bin"), std::ios::binary) << bytes;
+    char text[96];
+    snprintf(text, sizeof(text), "ok %zu bytes from %p", static_cast<size_t>(got), static_cast<const void*>(actor));
+    return text;
+  }
   if (verb == "release") {
     game::inject_pad(0, 128, 128, 128, 128, 0);
     return "ok";
@@ -152,6 +169,12 @@ std::string run(const std::string& line) {
   if (verb == "reload") {  // load the current build of the core (the loader swaps it within ~250 ms)
     core::request_reload();
     return "ok reloading";
+  }
+  if (verb == "trace") {  // trace <ticks>: the next engine ticks to MetalGearSkate.trace.csv
+    int ticks = 0;
+    if (!(in >> ticks) || ticks <= 0 || ticks > 36000) return "error: usage trace <ticks 1..36000>";
+    skate::trace(ticks);
+    return "ok";
   }
   if (verb == "recent") {  // recent reset: start collecting states/peak height afresh
     skate::reset_recent();
@@ -237,6 +260,7 @@ void write_state() {
   char json[2048];
   snprintf(json, sizeof(json),
            "{\"tick_ms\": %lu, \"core_generation\": %u, \"stage\": \"%s\", \"snake\": %s, \"snake_yaw\": %d,\n"
+           " \"life\": [%d, %d], \"alert_count\": %d,\n"
            " \"engine_ready\": %s, \"skating\": %s, \"skater_m\": [%.3f, %.3f, %.3f], \"skater_heading_deg\": %.1f,"
            " \"speed_mps\": %.2f, \"engine_state\": \"%s\", \"collision_triangles\": %d, \"rails\": %d,\n"
            " \"recent\": {\"states\": \"%s\", \"max_y\": %.3f, \"min_y\": %.3f, \"max_speed_mps\": %.2f},\n"
@@ -249,7 +273,8 @@ void write_state() {
            snake ? (std::string("[") + std::to_string(snake->x) + ", " + std::to_string(snake->y) + ", " +
                     std::to_string(snake->z) + "]").c_str()
                  : "null",
-           yaw ? *yaw : 0, sk.ready ? "true" : "false", sk.skating ? "true" : "false", sk.skater[0], sk.skater[1],
+           yaw ? *yaw : 0, game::link_short(game::kLinkCurrentHealth), game::link_short(game::kLinkMaxHealth),
+           game::link_short(game::kLinkAlertCount), sk.ready ? "true" : "false", sk.skating ? "true" : "false", sk.skater[0], sk.skater[1],
            sk.skater[2], sk.heading_deg, sk.speed_mps, sk.engine_state, sk.collision_triangles, sk.rails, recent.states,
            recent.max_y, recent.min_y, recent.max_speed_mps, have_pad ? "true" : "false", pad.buttons,
            pad.left_x, pad.left_y, pad.right_x, pad.right_y, game::injected_frames_left(), keys_down().c_str(),
