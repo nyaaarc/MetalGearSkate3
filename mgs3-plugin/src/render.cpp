@@ -888,9 +888,9 @@ void tally(const uint8_t* globals) {
 // frame's look-at point; non-zero for skinned models). So the world position of whatever the
 // draw transforms is T(L + d) * gVS_Mat0 * v (or * the bones), and the same draw seen from
 // another camera VP is gVS_Pers' = VP_k * T(L + d), VP_k being VP with row 2 = (0, 0, 0, k).
-// L is read from this frame's first stage draw (gVS_Mat0 a pure translation, d = 0); draws
-// before it use last frame's L extrapolated. Shadow, light and screen-space passes don't have
-// the shape and are left alone.
+// L is read from this frame's stage draws (gVS_Mat0 a pure translation, d = 0; note_look_at);
+// draws before it use last frame's L extrapolated. Shadow, light and screen-space passes don't
+// have the shape and are left alone.
 
 bool g_ovr_active = false;  // guarded by g_cap_mutex: rewrite this frame's draws
 Mat g_ovr_vp;               // the new view-projection (row 2 replaced per draw)
@@ -898,6 +898,8 @@ bool g_ovr_used = false;    // what the frame that just ended was drawn with (th
 Mat g_ovr_used_vp;
 Vec g_L_frame{}, g_L_prev{}, g_L_prev2{};
 bool g_L_known = false;
+Vec g_L_candidate{};     // the last stage draw's L while L isn't known yet
+int g_L_candidates = 0;  // stage draws in a row with it
 // When some of Snake's draws were posed with an extrapolated L this frame: that L, and its distance
 // from the frame's real L once seen (diagnostics; -1 = not measured). Guarded by g_cap_mutex.
 bool g_L_extrapolated = false;
@@ -1004,7 +1006,11 @@ void pick_scene_depth() {
 
 void reselect_snapshot();
 
-// Notes the frame's look-at point L from its first stage draw. Caller holds g_cap_mutex.
+// Notes the frame's look-at point L: the camera of its first two stage draws in a row that agree.
+// On about half the frames while riding, the first stage draw alone still has the previous
+// frame's camera (a tick behind) and every draw after it, Snake's included, the frame's own. Taken
+// from that one draw, Snake and the board were posed a tick off the scene on those frames: the
+// shake of the two against it (devlog 2026-10-08). Caller holds g_cap_mutex.
 void note_look_at(const uint8_t* globals) {
   Mat pers;
   Vec d;
@@ -1013,7 +1019,14 @@ void note_look_at(const uint8_t* globals) {
   memcpy(f, globals + kMat0Offset, sizeof(f));
   const Mat mat0 = from_rows(f);
   if (stage_translation(mat0)) {
-    g_L_frame = {-mat0.at(0, 3), -mat0.at(1, 3), -mat0.at(2, 3)};
+    const Vec L{-mat0.at(0, 3), -mat0.at(1, 3), -mat0.at(2, 3)};
+    const Vec moved = L - g_L_candidate;
+    if (g_L_candidates == 0 || dot(moved, moved) >= 1.f) {
+      g_L_candidate = L;
+      g_L_candidates = 1;
+      return;
+    }
+    g_L_frame = L;
     g_L_known = true;
     if (g_L_extrapolated) {
       const Vec gap = g_L_frame - g_L_extrap;
@@ -1257,6 +1270,8 @@ struct FrameMetric {
   // Where the deck and Snake's root land on screen (pixels, back buffer; NaN off screen), filled in
   // at Present for `gametest monitor`.
   float deck_sx, deck_sy, snake_sx, snake_sy;
+  // |L - the camera of the frame's most-used stage draws| (mm): 0 when L is the frame's own.
+  float l_gap_mm;
 };
 std::vector<FrameMetric> g_metrics;
 int g_metrics_left = 0;
@@ -1678,6 +1693,19 @@ void note_frame_metrics() {
   m.camera_updates = camera::driven();
   m.camera_tick = camera::camera_tick();
   m.snap_error_mm = g_skin.snap_error_mm;
+  m.l_gap_mm = NAN;
+  {
+    const CamSample* most = nullptr;  // g_cap_last is this frame's tally by now (end_capture_frame)
+    for (const CamSample& e : g_cap_last) {
+      if (stage_translation(from_rows(e.mat0)) && main_camera_pers(from_rows(e.pers)) && (!most || e.count > most->count)) {
+        most = &e;
+      }
+    }
+    if (most && g_L_history > 0) {
+      const Vec gap{-most->mat0[3] - g_L_prev.x, -most->mat0[7] - g_L_prev.y, -most->mat0[11] - g_L_prev.z};
+      m.l_gap_mm = std::sqrt(dot(gap, gap));
+    }
+  }
   for (int i = 0; i < 3; ++i) m.snake_rel[i] = m.deck_rel[i] = m.root[i] = NAN;
   m.deck_y = m.camera_mm = NAN;
   m.eye_moved = m.target_moved = m.L_eye = m.L_target = NAN;
@@ -1748,9 +1776,10 @@ void write_metrics() {
             "frame,ms,skating,tick,draws,posed_slots,near_draws,missed_draws,partial_draws,nearmiss_slots,held_draws,"
             "held_mm,early_posed,early_skipped,l_error_mm,deck_feet_mm,deck_feet_h_mm,object_mm,nm_bone,nm_pass,nm_rot,"
             "nm_move_mm,camera_updates,camera_tick,snake_rel_x,snake_rel_y,snake_rel_z,deck_rel_x,deck_rel_y,"
-            "deck_rel_z,root_x,root_y,root_z,deck_y,speed,camera_mm,L_x,L_y,L_z,eye_moved,target_moved,L_eye,L_target,snap_error_mm,deck_sx,deck_sy,snake_sx,snake_sy\n");
+            "deck_rel_z,root_x,root_y,root_z,deck_y,speed,camera_mm,L_x,L_y,L_z,eye_moved,target_moved,L_eye,L_target,snap_error_mm,deck_sx,deck_sy,snake_sx,snake_sy,"
+            "l_gap_mm\n");
     for (const FrameMetric& e : g_metrics) {
-      fprintf(file, "%llu,%.2f,%d,%llu,%d,%d,%d,%d,%d,%d,%d,%.1f,%d,%d,%.1f,%.1f,%.1f,%.1f,%d,%d,%.3f,%.1f,%llu,%llu,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
+      fprintf(file, "%llu,%.2f,%d,%llu,%d,%d,%d,%d,%d,%d,%d,%.1f,%d,%d,%.1f,%.1f,%.1f,%.1f,%d,%d,%.3f,%.1f,%llu,%llu,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
               static_cast<unsigned long long>(e.frame), e.ms, e.skating ? 1 : 0,
               static_cast<unsigned long long>(e.tick), e.draws, e.posed_slots, e.near_draws, e.missed_draws,
               e.partial_draws, e.nearmiss_slots, e.held_draws, e.held_mm, e.early_posed, e.early_skipped,
@@ -1759,7 +1788,7 @@ void write_metrics() {
               static_cast<unsigned long long>(e.camera_tick), e.snake_rel[0], e.snake_rel[1], e.snake_rel[2],
               e.deck_rel[0], e.deck_rel[1], e.deck_rel[2], e.root[0], e.root[1], e.root[2], e.deck_y, e.speed,
               e.camera_mm, e.L[0], e.L[1], e.L[2], e.eye_moved, e.target_moved, e.L_eye, e.L_target,
-              e.snap_error_mm, e.deck_sx, e.deck_sy, e.snake_sx, e.snake_sy);
+              e.snap_error_mm, e.deck_sx, e.deck_sy, e.snake_sx, e.snake_sy, e.l_gap_mm);
     }
     fclose(file);
   }
@@ -1995,6 +2024,7 @@ void end_capture_frame() {
     g_L_history = 0;
   }
   g_L_known = false;
+  g_L_candidates = 0;
   end_skin_frame();
   if (g_dump_state == 2) {
     write_dump();
@@ -2728,6 +2758,13 @@ std::string set(const std::string& key, const std::string& value) {
     return "ok dumping next frame";
   }
   if (key == "metrics") {  // `render metrics <frames>`: per-frame CSV beside the plugin
+    if (value == "stop") {  // `render metrics stop`: write the frames recorded so far
+      std::lock_guard lock(g_cap_mutex);
+      if (g_metrics_left <= 0 || g_metrics.empty()) return "error: not recording";
+      g_metrics_left = 0;
+      g_metrics_write = true;
+      return "ok writing " + std::to_string(g_metrics.size()) + " frames";
+    }
     const int frames = std::atoi(value.c_str());
     if (frames < 1 || frames > 100000) return "error: usage render metrics <frames>";
     std::lock_guard lock(g_cap_mutex);

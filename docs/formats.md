@@ -462,6 +462,27 @@ nowhere else. Speed sets the size; camera distance, frame time and ticks per fra
 it. camera.cpp keeps the last eight placements (eye written, board, Snake's pose) and the
 renderer poses each frame from the one whose eye is the frame's L (0 mm on 1498 of 1500 frames).
 
+### A frame's first stage draw, and the engine's clock (s091a, 2026-10-08)
+
+The latency flips above were mostly the measurement's.
+
+- **The first stage draw:** on about half the frames while riding, a frame's first stage draw
+  alone still carries the previous frame's camera, one update behind. Every stage draw after it
+  (hundreds) carries the frame's own camera, and so do all of Snake's draws.
+- **What that broke:** L was taken from that one draw, so on those frames Snake and the board were
+  posed a tick behind the scene they were drawn into.
+- **The frame's own camera:** it is always the placement written last before the frame's first
+  constant upload, about 12 ms earlier; the next placement comes about 4 ms after the upload.
+  Measured with QueryPerformanceCounter stamps on placements and uploads.
+- **Rare stale draws:** about one frame in 400 has a first stage draw with a camera 6-9 updates
+  old.
+- **The fix:** L is now the camera two stage draws in a row agree on.
+- **Engine timing:** the main camera's update (exe+AF050) runs exactly once per presented frame,
+  60 times a second. The engine used to tick on a clock of its own, which beat against the game's
+  frames: 5-15% of updates got no new tick or two. It now ticks once per update.
+- **Delaying the update doesn't help:** holding the camera update back by up to 8 ms, waiting for
+  the renderer, didn't change which camera the first stage draws had.
+
 ### Snake's draws while skating (s091a, run 22)
 
 A dump of every $Globals write in one frame (`render palette now` now records all draws; ones

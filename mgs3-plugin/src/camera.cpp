@@ -138,6 +138,8 @@ void __fastcall on_update(uint8_t* cam) {
       g_driven.fetch_add(1, std::memory_order_relaxed);
     }
   }
+  // After this frame's snapshot was taken: the engine's next tick is the next frame's.
+  if (cam == g_main) skate::frame();
   g_hook.call<void>(cam);
   if (cam == g_main && g_driving.load(std::memory_order_relaxed)) {
     std::lock_guard lock(g_snap_mutex);
@@ -191,7 +193,9 @@ bool frame_pose_at(const float (&L)[3], float (&board)[skate::kBoardBodies * 16]
     if (!s.valid) continue;
     const float dx = s.eye[0] - L[0], dy = s.eye[1] - L[1], dz = s.eye[2] - L[2];
     const float d2 = dx * dx + dy * dy + dz * dz;
-    if (!best || d2 < best_d2) {
+    // Placements with the same eye (standing still) go by tick, newest first: in array order Snake's
+    // pose jumped between ticks up to 8 apart while the camera held still.
+    if (!best || d2 < best_d2 || (d2 == best_d2 && s.tick > best->tick)) {
       best = &s;
       best_d2 = d2;
     }

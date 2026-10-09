@@ -9,7 +9,7 @@
 // Skate mode: runs the Skate 3 engine (skate_ffi.dll) and drives Snake from it.
 //
 // F5 (or request()) toggles skating where Snake stands, on the stage's own collision (flat floor
-// fallback). The engine ticks on its own thread at its fixed period, reads the game's pad 0
+// fallback). The engine ticks on its own thread, once per game frame (frame()), reads the game's pad 0
 // (XInput first if an Xbox pad is connected), blocks Snake's own input, and writes the skater's
 // position and heading into Snake. Settings come from MetalGearSkate.ini beside the plugin.
 namespace skate {
@@ -32,6 +32,10 @@ void set_stealth(bool on);
 // i injected, x XInput, g the game's pad; root position, speed, engine state) to
 // MetalGearSkate.trace.csv beside the plugin.
 void trace(int ticks);
+
+// A game frame began (the main camera's update, on the game's thread): the engine's next tick.
+// Without these for two periods the engine ticks on its own clock.
+void frame();
 
 // Start skating at a given spot: Snake's waist position in mm (floor + 800) and MGS3 heading in
 // degrees (0 = +z, 90 = +x). The skate loop then holds Snake there, so the game can't pull him back.

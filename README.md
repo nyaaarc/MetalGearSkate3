@@ -119,6 +119,9 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
   read from its vertex-shader constants each frame; in game it sits on the ground under Snake.
 - While skating, Snake is drawn in the skater's pose (his GPU bone palette is rewritten from
   `mgsk_snake_pose` each frame): pushing, riding and bailing.
+- Smooth motion: the engine ticks once per game frame. Snake and the board are posed from the
+  camera the frame is actually drawn with. In the soak test (`tools/soak.py`) every frame moves
+  exactly one tick, and the camera's frame-to-frame jerk is 0.3-3.3 mm at p95 (it was 40-160 mm).
 - While skating, MGS3's own camera follows Skate 3's chase camera (`mgsk_camera`; eye, aim and
   field of view set in the game's camera update), so the game draws and culls the scene from
   there and riding in any direction shows the whole stage.

@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <mutex>
 #include <fstream>
 #include <optional>
@@ -147,6 +149,10 @@ HMODULE g_ffi_module = nullptr;
 core::CoreShared* g_shared = nullptr;
 std::atomic<bool> g_stop{false};  // core unload: the skate thread hands over and exits
 HANDLE g_thread = nullptr;
+// Game frames, counted by frame() on the game's thread; the skate thread ticks on them (Pacer).
+std::mutex g_frame_mutex;
+std::condition_variable g_frame_cv;
+uint64_t g_frames = 0;  // guarded by g_frame_mutex
 
 // Board pose published by the skate thread for the renderer.
 std::mutex g_pose_mutex;
@@ -319,6 +325,8 @@ class Clock {
     ticks_per_period_ = static_cast<LONGLONG>(period * static_cast<double>(f.QuadPart));
     QueryPerformanceCounter(&next_);
   }
+  // Counts periods from now (no catch-up burst for the time it wasn't used).
+  void restart() { QueryPerformanceCounter(&next_); }
   // Sleeps until the next period boundary.
   void wait() {
     next_.QuadPart += ticks_per_period_;
@@ -334,6 +342,52 @@ class Clock {
  private:
   LONGLONG ticks_per_period_ = 0;
   LARGE_INTEGER next_{};
+};
+
+// Paces the engine: one tick per game frame (frame(), the main camera's update) while the game
+// draws, so each frame moves the skater, board and camera exactly one tick on. On the clock alone
+// the engine beat against the game's 60 fps: 5-15% of frames got no new tick and the next one
+// two, a judder in the whole picture, worse under CPU load (devlog 2026-10-08). The skater now
+// keeps the game's time: when the game drops frames he slows with it. With no frame for two
+// periods (loading, menus, no camera hook) it ticks on the clock.
+class Pacer {
+ public:
+  explicit Pacer(double period)
+      : clock_(period),
+        timeout_(std::chrono::duration<double>(period * 2)),
+        min_gap_(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(period / 2))) {
+    std::lock_guard lock(g_frame_mutex);
+    seen_ = g_frames;
+  }
+  void wait() {
+    bool framed;
+    {
+      std::unique_lock lock(g_frame_mutex);
+      const auto due = [this] { return g_frames != seen_; };
+      framed = due() || (!free_ && g_frame_cv.wait_for(lock, timeout_, due));
+      // Frames that piled up behind a slow tick get one tick: a pause, not a jump.
+      seen_ = g_frames;
+    }
+    if (!framed) {
+      if (!free_) clock_.restart();
+      free_ = true;
+      clock_.wait();
+      return;
+    }
+    free_ = false;
+    // Two updates of the main camera within a frame mustn't run the engine twice as fast.
+    std::this_thread::sleep_until(last_ + min_gap_);
+    last_ = std::chrono::steady_clock::now();
+  }
+
+ private:
+  Clock clock_;
+  std::chrono::duration<double> timeout_;
+  std::chrono::steady_clock::duration min_gap_;
+  std::chrono::steady_clock::time_point last_{};
+  uint64_t seen_ = 0;
+  bool free_ = true;
 };
 
 // A session built ahead on another thread. The engine can leave non-finite state in a session
@@ -525,9 +579,9 @@ DWORD WINAPI run(LPVOID) {
   }
   int trace_left = 0;  // engine ticks still to trace (harness `trace`), to MetalGearSkate.trace.csv
   std::string trace_rows;
-  Clock clock(period);
+  Pacer pacer(period);
   while (!g_stop) {
-    clock.wait();
+    pacer.wait();
     if (const int n = g_trace_request.exchange(0); n > 0) {
       trace_left = n;
       trace_rows = "tick_ms,src,buttons,lx,ly,rx,ry,x,y,z,speed,state\n";
@@ -813,6 +867,14 @@ void request(bool on) { g_request = on ? 1 : 0; }
 void set_stealth(bool on) { g_stealth = on ? 1 : 0; }
 
 void trace(int ticks) { g_trace_request = ticks; }
+
+void frame() {
+  {
+    std::lock_guard lock(g_frame_mutex);
+    ++g_frames;
+  }
+  g_frame_cv.notify_one();
+}
 
 void request_at(float x_mm, float y_mm, float z_mm, float heading_deg) {
   {
