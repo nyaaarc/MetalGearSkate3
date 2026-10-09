@@ -118,10 +118,13 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 - Board data for drawing: `mgsk_board_pose` gives the engine's seven board bodies (deck, trucks,
   wheels) as world transforms, and `mgsk_board_mesh` reads each part's mesh from the converted
   `skater.glb` in that body's frame; `tools/board_check.py` checks both off-game.
-- The board is drawn into the game's frame (Present hook) with the game's own view-projection,
-  read from its vertex-shader constants each frame; in game it sits on the ground under Snake.
+- The board is drawn with the game's own view-projection, read from its vertex-shader constants
+  each frame, into the scene's own render target as the 3D pass ends. The game's colour filter,
+  bloom, HUD and subtitles go over it like the rest of the scene (it used to cover the subtitles).
+  Carried off the board, it sits in Snake's hand.
 - While skating, Snake is drawn in the skater's pose (his GPU bone palette is rewritten from
-  `mgsk_snake_pose` each frame): pushing, riding and bailing.
+  `mgsk_snake_pose` each frame): pushing, riding and bailing. Only draws where his own sit are
+  touched; guards near him used to be stretched into beams, and matching them all slowed the game.
 - Smooth motion: the engine ticks once per game frame. Snake and the board are posed from the
   camera the frame is actually drawn with. In the soak test (`tools/soak.py`) every frame moves
   exactly one tick, and the camera's frame-to-frame jerk is 0.3-3.3 mm at p95 (it was 40-160 mm).

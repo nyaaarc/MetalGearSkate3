@@ -61,6 +61,8 @@ struct Settings {
   float aspect = 0.f;        // width / height; 0 = from the back buffer
   bool flip_z = false;       // false: right-handed view (looks down -z); true: left-handed (mirror image)
   bool depth_game = true;    // hide behind the scene's depth buffer (copied at Present), else draw over it
+  bool in_scene = true;      // draw the board into the scene's own target as its 3D pass ends (under the
+                             // HUD and subtitles, through the game's post-processing), else at Present
   float depth_bias = 0.002f; // relative: the scene must be this much nearer to hide the board
   bool depth_debug = false;  // log the scene's depth under the deck and the deck's own, once a second
   bool textures = true;      // the board's Skate 3 textures (when the DLL has them), else flat colours
@@ -87,16 +89,17 @@ Settings settings() {
 }
 
 std::string describe(const Settings& s) {
-  char text[352];
+  char text[384];
   snprintf(text, sizeof(text),
            "camera=%s skate_fov_deg=%.1f fov_deg=%.2f near_mm=%.1f far_mm=%.0f aspect=%.4f flip_z=%d depth_game=%d "
-           "depth_bias=%.4f depth_debug=%d textures=%d debug=%d",
+           "depth_bias=%.4f depth_debug=%d textures=%d debug=%d in_scene=%d",
            s.camera == Settings::Camera::Skate  ? "skate"
            : s.camera == Settings::Camera::Game ? "game"
            : s.camera == Settings::Camera::Drive ? (camera::orbiting() ? "drive(orbit)" : "drive")
                                                  : "object",
            s.skate_fov_deg, s.fov_deg, s.near_mm, s.far_mm, s.aspect, s.flip_z ? 1 : 0,
-           s.depth_game ? 1 : 0, s.depth_bias, s.depth_debug ? 1 : 0, s.textures ? 1 : 0, s.debug ? 1 : 0);
+           s.depth_game ? 1 : 0, s.depth_bias, s.depth_debug ? 1 : 0, s.textures ? 1 : 0, s.debug ? 1 : 0,
+           s.in_scene ? 1 : 0);
   return text;
 }
 
@@ -130,6 +133,7 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
   else if (key == "dump_after") ok = parse_bool(value, n.dump_after);
   else if (key == "debug") ok = parse_bool(value, n.debug);
   else if (key == "stamp") ok = parse_bool(value, n.stamp);
+  else if (key == "in_scene") ok = parse_bool(value, n.in_scene);
   else if (key == "camera") {
     ok = true;
     if (value == "skate") n.camera = Settings::Camera::Skate;
@@ -162,7 +166,7 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
     if (ok) camera::set_zoom(zoom);
   }
   else if (key == "skate_fov_deg") ok = parse_float(value, n.skate_fov_deg) && n.skate_fov_deg >= 0.f && n.skate_fov_deg < 170.f;
-  else return "unknown key (camera skate_fov_deg fov_deg near_mm far_mm aspect flip_z depth_game depth_bias depth_debug textures debug)";
+  else return "unknown key (camera skate_fov_deg fov_deg near_mm far_mm aspect flip_z depth_game depth_bias depth_debug textures debug in_scene)";
   if (!ok) return "bad value for " + key;
   s = n;
   return "";
@@ -171,7 +175,7 @@ std::string apply(Settings& s, const std::string& key, const std::string& value)
 void load_settings(const std::filesystem::path& ini) {
   Settings s;
   for (const char* key : {"camera", "drive_zoom", "skate_fov_deg", "fov_deg", "near_mm", "far_mm", "aspect", "flip_z", "depth_game",
-                          "depth_bias", "depth_debug", "textures", "debug", "stamp"}) {
+                          "depth_bias", "depth_debug", "textures", "debug", "stamp", "in_scene"}) {
     char value[64] = {};
     GetPrivateProfileStringA("render", key, "", value, sizeof(value), ini.string().c_str());
     if (!*value) continue;
@@ -729,7 +733,10 @@ struct SavedState {
   ComPtr<ID3D11HullShader> hs;
   ComPtr<ID3D11DomainShader> ds;
   ComPtr<ID3D11Buffer> vs_cb, ps_cb;
-  ComPtr<ID3D11ShaderResourceView> ps_srvs[3];
+  // Binding the scene's own target unbinds it wherever the game had it as an input for its next
+  // draw (post-processing), so more slots than ours (0-2) are kept.
+  static constexpr UINT kSrvs = 16;
+  ComPtr<ID3D11ShaderResourceView> ps_srvs[kSrvs];
   ComPtr<ID3D11SamplerState> ps_sampler;
   ComPtr<ID3D11RasterizerState> rs;
   UINT viewport_count = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
@@ -755,9 +762,9 @@ void save(ID3D11DeviceContext* c, SavedState& s) {
   c->DSGetShader(&s.ds, nullptr, nullptr);
   c->VSGetConstantBuffers(0, 1, &s.vs_cb);
   c->PSGetConstantBuffers(0, 1, &s.ps_cb);
-  ID3D11ShaderResourceView* srvs[3] = {};
-  c->PSGetShaderResources(0, 3, srvs);
-  for (int i = 0; i < 3; ++i) s.ps_srvs[i].Attach(srvs[i]);
+  ID3D11ShaderResourceView* srvs[SavedState::kSrvs] = {};
+  c->PSGetShaderResources(0, SavedState::kSrvs, srvs);
+  for (UINT i = 0; i < SavedState::kSrvs; ++i) s.ps_srvs[i].Attach(srvs[i]);
   c->PSGetSamplers(0, 1, &s.ps_sampler);
   c->RSGetState(&s.rs);
   c->RSGetViewports(&s.viewport_count, s.viewports);
@@ -781,8 +788,9 @@ void restore(ID3D11DeviceContext* c, SavedState& s) {
   ID3D11Buffer* ps_cb = s.ps_cb.Get();
   c->VSSetConstantBuffers(0, 1, &vs_cb);
   c->PSSetConstantBuffers(0, 1, &ps_cb);
-  ID3D11ShaderResourceView* srvs[3] = {s.ps_srvs[0].Get(), s.ps_srvs[1].Get(), s.ps_srvs[2].Get()};
-  c->PSSetShaderResources(0, 3, srvs);
+  ID3D11ShaderResourceView* srvs[SavedState::kSrvs];
+  for (UINT i = 0; i < SavedState::kSrvs; ++i) srvs[i] = s.ps_srvs[i].Get();
+  c->PSSetShaderResources(0, SavedState::kSrvs, srvs);
   ID3D11SamplerState* sampler = s.ps_sampler.Get();
   c->PSSetSamplers(0, 1, &sampler);
   c->DSSetShader(s.ds.Get(), nullptr, 0);
@@ -842,6 +850,11 @@ struct DepthCount {
 };
 DepthCount g_depth_frame[4];  // this frame's candidates
 ComPtr<ID3D11DepthStencilView> g_scene_depth;  // the current pick
+// This frame's colour target drawn with the scene depth, and the board drawn into it as the 3D
+// pass ended (draw_board_in_scene): tried, done, and done last frame (read at Present).
+ComPtr<ID3D11RenderTargetView> g_scene_rtv;
+D3D11_TEXTURE2D_DESC g_scene_rt{};
+bool g_in_scene_tried = false, g_in_scene = false, g_in_scene_last = false;
 ComPtr<ID3D11DepthStencilView> g_depth_next;   // a different pick, and for how many frames running
 int g_depth_next_frames = 0;
 constexpr int kDepthSwitchFrames = 30;
@@ -947,9 +960,22 @@ void note_depth(ID3D11DeviceContext* c, const uint8_t* globals, bool snake) {
   Mat pers;
   Vec d;
   if (!main_camera_draw(globals, pers, d)) return;
+  ComPtr<ID3D11RenderTargetView> rtv;
   ComPtr<ID3D11DepthStencilView> view;
-  c->OMGetRenderTargets(0, nullptr, &view);
+  c->OMGetRenderTargets(1, &rtv, &view);
   if (!view) return;
+  if (rtv && !g_scene_rtv && g_scene_depth) {
+    // By texture: the view bound isn't always the one picked.
+    ComPtr<ID3D11Resource> bound, scene, res;
+    ComPtr<ID3D11Texture2D> tex;
+    view->GetResource(&bound);
+    g_scene_depth->GetResource(&scene);
+    rtv->GetResource(&res);
+    if (bound.Get() == scene.Get() && res && SUCCEEDED(res.As(&tex))) {
+      g_scene_rtv = rtv;
+      tex->GetDesc(&g_scene_rt);
+    }
+  }
   for (DepthCount& e : g_depth_frame) {
     if (e.view == view) {
       ++e.count;
@@ -1237,6 +1263,10 @@ struct SkinFrame {
   int early_posed = 0;        // draws posed before this frame's L was known (L extrapolated)
   int early_skipped = 0;      // skinned draws skipped: L unknown and no history to extrapolate
   int own_draws = 0;          // not posing (not skating): his own body draws, unposed
+  float own_far_mm = -1;      // farthest posed draw from his object (nearest recent pass)
+  float own_joint_mm = -1;    // of his posed draws off his object's origin, the farthest from a game joint
+  int far_draws = 0;          // skinned draws too far from him to be his (guards, vehicles), skipped
+  int64_t pose_ticks = 0;     // time in pose_snake (QueryPerformanceCounter ticks)
 };
 SkinFrame g_skin;
 // Frames with at least one of Snake's draws, posed or his own (`state.render.snake_frames`;
@@ -1272,6 +1302,10 @@ struct FrameMetric {
   float deck_sx, deck_sy, snake_sx, snake_sy;
   // |L - the camera of the frame's most-used stage draws| (mm): 0 when L is the frame's own.
   float l_gap_mm;
+  float own_far_mm;  // the farthest of his posed draws from his object
+  float own_joint_mm;
+  int far_draws;
+  float pose_ms;     // the frame's time in pose_snake, on the game's render thread
 };
 std::vector<FrameMetric> g_metrics;
 int g_metrics_left = 0;
@@ -1365,6 +1399,13 @@ bool near_miss(const float* slot) {
 constexpr float kAnchorMm = 450.f;
 constexpr float kAnchorDrawMm = 1500.f;
 constexpr int kHeadBone = 4;  // sna_def.mdl: the joint his headband and hair rig hangs from
+// Where his draws sit (measured 2026-10-09): his body's on his object's origin (0 mm); his head's
+// and his headband rig's ~0.6 m up, 122-189 mm from the nearest of his game joints. A draw
+// elsewhere is someone else's: a guard passing his frozen object came within 0.7 m of its origin
+// but no nearer than 257 mm to a joint.
+constexpr float kOwnBodyMm = 300.f;
+constexpr float kOwnJointMm = 220.f;
+constexpr float kOwnDrawMm = 1000.f;  // farther than this from his origin, no joint is checked
 // A draw on its own origin this close (mm) to one of his joints is a held item riding it. (The
 // headband rig's origin is ~120 mm from the head joint, so the head is excluded explicitly.)
 constexpr float kHeldMm = 100.f;
@@ -1553,9 +1594,6 @@ bool pose_snake(uint8_t* globals) {
       return false;
     }
   }
-  // No check of the draw's own origin: some of Snake's draws (about 22 a frame, ~640 mm above his
-  // object) sit on another origin yet use palettes relative to his object's, and only his slots
-  // match his bones exactly, so matching alone picks them out.
   const uint64_t posed_before = g_skin.posed;
   auto* palette = reinterpret_cast<float*>(globals + kPaletteOffset);
   const Vec Od{g_L_frame.x + d.x, g_L_frame.y + d.y, g_L_frame.z + d.z};
@@ -1573,6 +1611,33 @@ bool pose_snake(uint8_t* globals) {
     g_skin.held_mm = std::max(g_skin.held_mm, std::sqrt(dot(gap, gap)));
     if (early) ++g_skin.early_posed;
     return true;
+  }
+  // Only draws where his sit (kOwnBodyMm, kOwnJointMm) are matched. Matching isn't exact enough on
+  // its own: a guard in a pose like his frozen one has slots that pass for his bones, and posed
+  // from the skater, metres from the frozen object, they stretched across the stage (user,
+  // 2026-10-09). Some of his draws (his head's) sit on another origin yet use palettes relative to
+  // his object's.
+  float own_d2 = 1e30f;
+  for (int k = 0; k < g_skin.passes; ++k) {
+    const Vec gap = Od - g_skin.origin[k];
+    own_d2 = std::min(own_d2, dot(gap, gap));
+  }
+  float joint_d2 = 0.f;
+  if (own_d2 > kOwnBodyMm * kOwnBodyMm) {
+    joint_d2 = 1e30f;
+    if (own_d2 <= kOwnDrawMm * kOwnDrawMm) {
+      for (int k = 0; k < g_skin.passes; ++k) {
+        for (int b = 0; b < kSnakeBones; ++b) {
+          const float* m = g_skin.game[k] + b * 16;
+          const Vec gap{Od.x - m[12], Od.y - m[13], Od.z - m[14]};
+          joint_d2 = std::min(joint_d2, dot(gap, gap));
+        }
+      }
+    }
+    if (joint_d2 > kOwnJointMm * kOwnJointMm) {
+      ++g_skin.far_draws;
+      return false;
+    }
   }
   int draw_nearmiss = 0;
   for (UINT s = 0; s < kPaletteSlots; ++s) {
@@ -1643,6 +1708,8 @@ bool pose_snake(uint8_t* globals) {
   }
   if (draw_nearmiss > 0) ++g_skin.partial_draws;
   if (early) ++g_skin.early_posed;
+  g_skin.own_far_mm = std::max(g_skin.own_far_mm, std::sqrt(own_d2));
+  if (own_d2 > kOwnBodyMm * kOwnBodyMm) g_skin.own_joint_mm = std::max(g_skin.own_joint_mm, std::sqrt(joint_d2));
   ++g_skin.draws;
   return true;
 }
@@ -1693,6 +1760,10 @@ void note_frame_metrics() {
   m.camera_updates = camera::driven();
   m.camera_tick = camera::camera_tick();
   m.snap_error_mm = g_skin.snap_error_mm;
+  m.own_far_mm = g_skin.own_far_mm;
+  m.own_joint_mm = g_skin.own_joint_mm;
+  m.far_draws = g_skin.far_draws;
+  m.pose_ms = static_cast<float>(1000.0 * static_cast<double>(g_skin.pose_ticks) / static_cast<double>(freq.QuadPart));
   m.l_gap_mm = NAN;
   {
     const CamSample* most = nullptr;  // g_cap_last is this frame's tally by now (end_capture_frame)
@@ -1777,9 +1848,9 @@ void write_metrics() {
             "held_mm,early_posed,early_skipped,l_error_mm,deck_feet_mm,deck_feet_h_mm,object_mm,nm_bone,nm_pass,nm_rot,"
             "nm_move_mm,camera_updates,camera_tick,snake_rel_x,snake_rel_y,snake_rel_z,deck_rel_x,deck_rel_y,"
             "deck_rel_z,root_x,root_y,root_z,deck_y,speed,camera_mm,L_x,L_y,L_z,eye_moved,target_moved,L_eye,L_target,snap_error_mm,deck_sx,deck_sy,snake_sx,snake_sy,"
-            "l_gap_mm\n");
+            "l_gap_mm,own_far_mm,far_draws,pose_ms,own_joint_mm\n");
     for (const FrameMetric& e : g_metrics) {
-      fprintf(file, "%llu,%.2f,%d,%llu,%d,%d,%d,%d,%d,%d,%d,%.1f,%d,%d,%.1f,%.1f,%.1f,%.1f,%d,%d,%.3f,%.1f,%llu,%llu,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
+      fprintf(file, "%llu,%.2f,%d,%llu,%d,%d,%d,%d,%d,%d,%d,%.1f,%d,%d,%.1f,%.1f,%.1f,%.1f,%d,%d,%.3f,%.1f,%llu,%llu,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%d,%.3f,%.1f\n",
               static_cast<unsigned long long>(e.frame), e.ms, e.skating ? 1 : 0,
               static_cast<unsigned long long>(e.tick), e.draws, e.posed_slots, e.near_draws, e.missed_draws,
               e.partial_draws, e.nearmiss_slots, e.held_draws, e.held_mm, e.early_posed, e.early_skipped,
@@ -1788,7 +1859,8 @@ void write_metrics() {
               static_cast<unsigned long long>(e.camera_tick), e.snake_rel[0], e.snake_rel[1], e.snake_rel[2],
               e.deck_rel[0], e.deck_rel[1], e.deck_rel[2], e.root[0], e.root[1], e.root[2], e.deck_y, e.speed,
               e.camera_mm, e.L[0], e.L[1], e.L[2], e.eye_moved, e.target_moved, e.L_eye, e.L_target,
-              e.snap_error_mm, e.deck_sx, e.deck_sy, e.snake_sx, e.snake_sy, e.l_gap_mm);
+              e.snap_error_mm, e.deck_sx, e.deck_sy, e.snake_sx, e.snake_sy, e.l_gap_mm, e.own_far_mm, e.far_draws, e.pose_ms,
+              e.own_joint_mm);
     }
     fclose(file);
   }
@@ -1810,6 +1882,9 @@ void end_skin_frame() {
   g_skin.near_draws = g_skin.missed_draws = g_skin.partial_draws = g_skin.nearmiss_slots = 0;
   g_skin.held_draws = g_skin.early_posed = g_skin.early_skipped = 0;
   g_skin.held_mm = -1;
+  g_skin.own_far_mm = g_skin.own_joint_mm = -1;
+  g_skin.far_draws = 0;
+  g_skin.pose_ticks = 0;
   g_skin.nm_rot = g_skin.nm_move = 1e9f;
   g_skin.nm_bone = g_skin.nm_pass = -1;
   g_L_error_mm = -1;
@@ -1906,6 +1981,74 @@ void end_cbscan() {
   }
 }
 
+// ---- pass trace (`render passes now`): the frame's render targets in order -----------------
+// For one frame, every Unmap and UpdateSubresource, grouped into runs by the colour and depth
+// targets bound at the time and counted by what was written: shows where the 3D scene ends and
+// the HUD begins. Guarded by g_cap_mutex.
+int g_passes_state = 0;  // 0 idle, 1 requested, 2 recording this frame
+struct PassRun {
+  ID3D11Resource* rt = nullptr;
+  ID3D11Resource* ds = nullptr;
+  D3D11_TEXTURE2D_DESC rt_desc{}, ds_desc{};
+  int main = 0, globals = 0, cb = 0, vb = 0, ib = 0, tex = 0, other = 0;
+};
+std::vector<PassRun> g_passes;
+ID3D11Resource* g_passes_back = nullptr;  // the swap chain's back buffer (for the log)
+
+void note_pass(ID3D11DeviceContext* c, ID3D11Resource* res, const uint8_t* globals) {
+  ComPtr<ID3D11RenderTargetView> rtv;
+  ComPtr<ID3D11DepthStencilView> dsv;
+  c->OMGetRenderTargets(1, &rtv, &dsv);
+  ComPtr<ID3D11Resource> rt, ds;
+  if (rtv) rtv->GetResource(&rt);
+  if (dsv) dsv->GetResource(&ds);
+  if (g_passes.empty() || g_passes.back().rt != rt.Get() || g_passes.back().ds != ds.Get()) {
+    if (g_passes.size() >= 2000) return;
+    PassRun run;
+    run.rt = rt.Get();
+    run.ds = ds.Get();
+    ComPtr<ID3D11Texture2D> tex;
+    if (rt && SUCCEEDED(rt.As(&tex))) tex->GetDesc(&run.rt_desc);
+    tex.Reset();
+    if (ds && SUCCEEDED(ds.As(&tex))) tex->GetDesc(&run.ds_desc);
+    g_passes.push_back(run);
+  }
+  PassRun& run = g_passes.back();
+  D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+  res->GetType(&dim);
+  if (dim != D3D11_RESOURCE_DIMENSION_BUFFER) {
+    ++run.tex;
+    return;
+  }
+  D3D11_BUFFER_DESC d;
+  static_cast<ID3D11Buffer*>(res)->GetDesc(&d);
+  Mat pers;
+  Vec off;
+  if (globals) {
+    ++(main_camera_draw(globals, pers, off) ? run.main : run.globals);
+  } else if (d.BindFlags & D3D11_BIND_CONSTANT_BUFFER) {
+    ++run.cb;
+  } else if (d.BindFlags & D3D11_BIND_VERTEX_BUFFER) {
+    ++run.vb;
+  } else if (d.BindFlags & D3D11_BIND_INDEX_BUFFER) {
+    ++run.ib;
+  } else {
+    ++run.other;
+  }
+}
+
+void end_passes() {
+  log("render: passes: %zu runs (back buffer %p)", g_passes.size(), static_cast<void*>(g_passes_back));
+  for (size_t i = 0; i < g_passes.size(); ++i) {
+    const PassRun& e = g_passes[i];
+    log("render: passes: #%zu rt %p %ux%u fmt %d%s ds %p %ux%u fmt %d: main %d globals %d cb %d vb %d ib %d tex %d other %d",
+        i, static_cast<void*>(e.rt), e.rt_desc.Width, e.rt_desc.Height, static_cast<int>(e.rt_desc.Format),
+        e.rt && e.rt == g_passes_back ? " (back buffer)" : "", static_cast<void*>(e.ds), e.ds_desc.Width,
+        e.ds_desc.Height, static_cast<int>(e.ds_desc.Format), e.main, e.globals, e.cb, e.vb, e.ib, e.tex, e.other);
+  }
+  g_passes.clear();
+}
+
 HRESULT STDMETHODCALLTYPE on_map(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub, D3D11_MAP type, UINT flags,
                                  D3D11_MAPPED_SUBRESOURCE* out) {
   hooks::Guard guard;
@@ -1937,12 +2080,47 @@ HRESULT STDMETHODCALLTYPE on_map(ID3D11DeviceContext* c, ID3D11Resource* res, UI
   return hr;
 }
 
+// Set on the render thread while the board is drawn mid-frame: its own writes don't count.
+thread_local bool t_in_board = false;
+
+// True once the scene's 3D pass is over: its colour target was drawn to this frame and now
+// another target of its size is bound (the game's post-processing; the HUD and subtitles come
+// after). Smaller targets in between (1024 x 1024) are the game's own side passes. Caller holds
+// g_cap_mutex.
+bool scene_pass_ended(ID3D11DeviceContext* c) {
+  if (!g_scene_rtv || g_in_scene_tried || t_in_board) return false;
+  ComPtr<ID3D11RenderTargetView> rtv;
+  c->OMGetRenderTargets(1, &rtv, nullptr);
+  if (!rtv || rtv.Get() == g_scene_rtv.Get()) return false;
+  ComPtr<ID3D11Resource> res, scene;
+  rtv->GetResource(&res);
+  g_scene_rtv->GetResource(&scene);
+  ComPtr<ID3D11Texture2D> tex;
+  if (!res || res.Get() == scene.Get() || FAILED(res.As(&tex))) return false;
+  D3D11_TEXTURE2D_DESC d;
+  tex->GetDesc(&d);
+  if (d.Width != g_scene_rt.Width || d.Height != g_scene_rt.Height) return false;
+  g_in_scene_tried = true;
+  return true;
+}
+
+void draw_board_in_scene(ID3D11DeviceContext* c);
+
 void STDMETHODCALLTYPE on_unmap(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub) {
   hooks::Guard guard;
+  bool scene_ended = false;
   // Stopping: nothing is written into mappings any more (a stale pending entry would point at
   // memory the driver has already reused).
   if (c == g_cap_context && sub == 0 && !hooks::stopping()) {
     std::lock_guard lock(g_cap_mutex);
+    scene_ended = scene_pass_ended(c);
+    if (g_passes_state == 2) {
+      const uint8_t* globals = nullptr;
+      for (const Pending& p : g_pending_maps) {
+        if (p.res == res) globals = p.data;
+      }
+      note_pass(c, res, globals);
+    }
     if (g_cbscan_state == 2) {
       for (CbPending& p : g_cb_pending) {
         if (p.res == res) {
@@ -1958,7 +2136,12 @@ void STDMETHODCALLTYPE on_unmap(ID3D11DeviceContext* c, ID3D11Resource* res, UIN
         note_look_at(p.data);
         const bool after = g_settings.dump_after;
         if (g_dump_state == 2 && !after) dump_draw(p.data);
-        note_depth(c, p.data, pose_snake(p.data));
+        LARGE_INTEGER t0, t1;
+        QueryPerformanceCounter(&t0);
+        const bool snake = pose_snake(p.data);
+        QueryPerformanceCounter(&t1);
+        g_skin.pose_ticks += t1.QuadPart - t0.QuadPart;
+        note_depth(c, p.data, snake);
         if (g_dump_state == 2 && after) dump_draw(p.data);
         if (g_ovr_active) rewrite(p.data);
         p = {};
@@ -1967,17 +2150,27 @@ void STDMETHODCALLTYPE on_unmap(ID3D11DeviceContext* c, ID3D11Resource* res, UIN
     }
   }
   g_unmap_hook.stdcall<void>(c, res, sub);
+  if (scene_ended) draw_board_in_scene(c);
 }
 
 void STDMETHODCALLTYPE on_update(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub, const D3D11_BOX* box,
                                  const void* src, UINT row_pitch, UINT depth_pitch) {
   hooks::Guard guard;
+  bool scene_ended = false;
+  if (c == g_cap_context && sub == 0 && !hooks::stopping()) {
+    std::lock_guard lock(g_cap_mutex);
+    scene_ended = scene_pass_ended(c);
+  }
   if (c == g_cap_context && sub == 0 && src && !hooks::stopping() && g_cbscan_state == 2) {
     if (const UINT size = cb_size(res)) {
       std::lock_guard lock(g_cap_mutex);
       const UINT left = box ? box->left : 0, right = box ? box->right : size;
       if (right > left) cbscan(static_cast<const uint8_t*>(src), right - left);
     }
+  }
+  if (c == g_cap_context && sub == 0 && src && !hooks::stopping() && g_passes_state == 2) {
+    std::lock_guard lock(g_cap_mutex);
+    note_pass(c, res, !box && is_globals(res) ? static_cast<const uint8_t*>(src) : nullptr);
   }
   if (c == g_cap_context && sub == 0 && src && is_globals(res) && !hooks::stopping()) {
     std::lock_guard lock(g_cap_mutex);
@@ -1991,6 +2184,7 @@ void STDMETHODCALLTYPE on_update(ID3D11DeviceContext* c, ID3D11Resource* res, UI
     }
   }
   g_update_hook.stdcall<void>(c, res, sub, box, src, row_pitch, depth_pitch);
+  if (scene_ended) draw_board_in_scene(c);
 }
 
 void install_capture(ID3D11DeviceContext* c) {
@@ -2015,6 +2209,14 @@ void end_capture_frame() {
   g_cap_last_updates = g_cap_updates;
   g_cap_last_partial = g_cap_partial;
   g_cap_writes = g_cap_maps = g_cap_updates = g_cap_partial = 0;
+  if (g_passes_state == 2) {
+    log("render: passes: scene target %p %ux%u x%u; board into it: tried %d, drawn %d",
+        static_cast<void*>(g_scene_rtv.Get()), g_scene_rt.Width, g_scene_rt.Height, g_scene_rt.SampleDesc.Count,
+        g_in_scene_tried ? 1 : 0, g_in_scene ? 1 : 0);
+  }
+  g_in_scene_last = g_in_scene;
+  g_in_scene = g_in_scene_tried = false;
+  g_scene_rtv.Reset();
   pick_scene_depth();
   if (g_L_known) {
     g_L_prev2 = g_L_prev;
@@ -2038,6 +2240,13 @@ void end_capture_frame() {
   } else if (g_cbscan_state == 1) {
     begin_cbscan();
     g_cbscan_state = 2;
+  }
+  if (g_passes_state == 2) {
+    end_passes();
+    g_passes_state = 0;
+  } else if (g_passes_state == 1) {
+    g_passes.clear();
+    g_passes_state = 2;
   }
   g_ovr_used = g_ovr_active;
   g_ovr_used_vp = g_ovr_vp;
@@ -2412,6 +2621,158 @@ void stamp_frame(ID3D11DeviceContext* c, ID3D11Texture2D* back) {
   }
 }
 
+// Draws the board (and with `snake`, the debug markers on Snake's position) into `rtv`, a target
+// like `target`, from `vp`, and puts the context's state back. `deck` gets the deck's position.
+void draw_board(ID3D11Device* device, ID3D11DeviceContext* c, ID3D11RenderTargetView* rtv,
+                const D3D11_TEXTURE2D_DESC& target, const Mat& vp, bool reversed, const float* pose, const Vec* snake,
+                const Settings& s, Vec& deck) {
+  SavedState saved;
+  save(c, saved);
+  ID3D11DepthStencilView* dsv = pick_depth(device, c, target, s, reversed);
+
+  ID3D11RenderTargetView* target_rtv = rtv;
+  c->OMSetRenderTargetsAndUnorderedAccessViews(1, &target_rtv, dsv, 0, D3D11_KEEP_UNORDERED_ACCESS_VIEWS, nullptr, nullptr);
+  c->OMSetDepthStencilState((reversed ? g_gpu.depth_own_rev : g_gpu.depth_own).Get(), 0);
+  c->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+  const D3D11_VIEWPORT viewport{0.f, 0.f, static_cast<float>(target.Width), static_cast<float>(target.Height), 0.f, 1.f};
+  c->RSSetViewports(1, &viewport);
+  c->RSSetState(g_gpu.rs.Get());
+  c->IASetInputLayout(g_gpu.layout.Get());
+  c->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  ID3D11Buffer* vb = g_gpu.vb.Get();
+  const UINT stride = sizeof(MgskBoardVertex), offset = 0;
+  c->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
+  c->IASetIndexBuffer(g_gpu.ib.Get(), DXGI_FORMAT_R16_UINT, 0);
+  c->VSSetShader(g_gpu.vs.Get(), nullptr, 0);
+  c->PSSetShader(g_gpu.ps.Get(), nullptr, 0);
+  c->GSSetShader(nullptr, nullptr, 0);
+  c->HSSetShader(nullptr, nullptr, 0);
+  c->DSSetShader(nullptr, nullptr, 0);
+  ID3D11Buffer* cb = g_gpu.cb.Get();
+  c->VSSetConstantBuffers(0, 1, &cb);
+  c->PSSetConstantBuffers(0, 1, &cb);
+  ID3D11SamplerState* sampler = g_gpu.sampler.Get();
+  c->PSSetSamplers(0, 1, &sampler);
+  const bool textured = s.textures && !g_gpu.board_srvs.empty();
+
+  // Engine metres -> MGS3 millimetres, same axes.
+  const Mat to_mm = place({0.f, 0.f, 0.f}, {kMmPerUnit, kMmPerUnit, kMmPerUnit});
+  if (pose) {
+    for (int body = 0; body < skate::kBoardBodies; ++body) {
+      Mat local;
+      memcpy(local.m, pose + body * 16, sizeof(local.m));
+      const Mat world = mul(to_mm, local);
+      if (body == MGSK_BODY_DECK) deck = {world.at(0, 3), world.at(1, 3), world.at(2, 3)};
+      if (textured && !g_part_runs[body].empty()) {
+        constexpr float kWhite[3] = {255, 255, 255};
+        for (const TexturedRange& run : g_part_runs[body]) {
+          draw(c, vp, world, kWhite, run.range, g_gpu.board_srvs[run.texture].Get());
+        }
+      } else {
+        draw(c, vp, world, part_color(body), g_parts[body]);
+      }
+    }
+  }
+  if (snake) {
+    const Vec at_snake = *snake;
+    // 15 cm yellow cube on Snake's position, 1 m bars along +X (red), +Y (green), +Z (blue).
+    constexpr float kYellow[3] = {255, 220, 40}, kRed[3] = {230, 40, 40}, kGreen[3] = {40, 200, 60}, kBlue[3] = {50, 90, 255};
+    draw(c, vp, place(at_snake, {150.f, 150.f, 150.f}), kYellow, g_cube);
+    draw(c, vp, place({at_snake.x + 500.f, at_snake.y, at_snake.z}, {1000.f, 40.f, 40.f}), kRed, g_cube);
+    draw(c, vp, place({at_snake.x, at_snake.y + 500.f, at_snake.z}, {40.f, 1000.f, 40.f}), kGreen, g_cube);
+    draw(c, vp, place({at_snake.x, at_snake.y, at_snake.z + 500.f}, {40.f, 40.f, 1000.f}), kBlue, g_cube);
+  }
+  if (s.depth_debug && pose && GetTickCount64() - g_depth_debug_at >= 1000) {
+    g_depth_debug_at = GetTickCount64();
+    float clip[4];
+    for (int i = 0; i < 4; ++i) clip[i] = vp.at(i, 0) * deck.x + vp.at(i, 1) * deck.y + vp.at(i, 2) * deck.z + vp.at(i, 3);
+    if (clip[3] <= 0.f) {
+      log("render: depth_debug: deck behind the camera");
+    } else {
+      const float x = (clip[0] / clip[3] + 1.f) * 0.5f * static_cast<float>(target.Width);
+      const float y = (1.f - clip[1] / clip[3]) * 0.5f * static_cast<float>(target.Height);
+      const float own = clip[2] / clip[3];
+      float scene_d = 0.f;
+      const bool on_screen = x >= 0.f && y >= 0.f && x < static_cast<float>(target.Width) && y < static_cast<float>(target.Height);
+      if (on_screen && probe_scene_depth(c, x * g_depth_test.params[0], y * g_depth_test.params[1], scene_d)) {
+        log("render: depth_debug: deck centre at pixel %.0f %.0f, its depth %.6f (k/w: distance %.0f mm); scene depth "
+            "there %.6f (x%.0f samples, farthest) -> board %s (bias %.4f)",
+            x, y, own, clip[3], scene_d, g_depth_test.extra[0], scene_d > own * (1.f + s.depth_bias) ? "hidden" : "shown",
+            s.depth_bias);
+      } else {
+        log("render: depth_debug: deck centre at pixel %.0f %.0f, its depth %.6f; no scene depth to compare (%s)", x, y,
+            own, on_screen ? "depth_game off or unusable" : "off screen");
+      }
+    }
+  }
+  restore(c, saved);
+}
+
+std::atomic<uint64_t> g_in_scene_frames{0};
+
+// Draws the board into the scene's own colour target as its 3D pass ends (scene_pass_ended), so
+// the game's post-processing, HUD and subtitles go over it like the rest of the scene. Present
+// draws it over the finished frame instead on frames where this didn't happen.
+void draw_board_in_scene(ID3D11DeviceContext* c) {
+  if (hooks::stopping() || !g_board_loaded) return;
+  const Settings s = settings();
+  if (!s.in_scene) return;
+  ComPtr<ID3D11RenderTargetView> rtv;
+  D3D11_TEXTURE2D_DESC target{};
+  Mat vp;
+  bool have_vp = false, reversed = false;
+  float pose[skate::kBoardBodies * 16];
+  bool have_pose = false;
+  {
+    std::lock_guard lock(g_cap_mutex);
+    rtv = g_scene_rtv;
+    target = g_scene_rt;
+    // The frame's camera, as Present would pick it: the skate camera's override, else the game's
+    // most-used camera so far (captured_camera reads the last finished frame's).
+    if (g_ovr_active) {
+      vp = g_ovr_vp;
+      have_vp = reversed = true;
+    } else if (s.camera != Settings::Camera::Object) {
+      const CamSample* best = nullptr;
+      for (const CamSample& e : g_cap_frame) {
+        if (!stage_translation(from_rows(e.mat0)) || !rotation_projection(from_rows(e.pers))) continue;
+        if (!best || e.count > best->count) best = &e;
+      }
+      if (best) {
+        const Mat pers = from_rows(best->pers);
+        vp = mul(pers, from_rows(best->mat0));
+        reversed = pers.at(2, 3) > 0.f;
+        have_vp = true;
+      }
+    }
+    // The board from the tick Snake is posed from this frame.
+    if (g_skin.state == 1 && g_skin.have_board) {
+      memcpy(pose, g_skin.board, sizeof(pose));
+      have_pose = true;
+    }
+  }
+  if (!have_pose) have_pose = skate::board_pose(pose);
+  if (!rtv || !have_vp || !have_pose) {
+    static ULONGLONG logged_at = 0;
+    if (GetTickCount64() - logged_at >= 10000) {
+      logged_at = GetTickCount64();
+      log("render: board not drawn into the scene (target %d, camera %d, pose %d); drawn at Present", rtv ? 1 : 0,
+          have_vp ? 1 : 0, have_pose ? 1 : 0);
+    }
+    return;
+  }
+  ComPtr<ID3D11Device> device;
+  c->GetDevice(&device);
+  if (!ensure_gpu(device.Get())) return;
+  t_in_board = true;
+  Vec deck{};
+  draw_board(device.Get(), c, rtv.Get(), target, vp, reversed, pose, nullptr, s, deck);
+  t_in_board = false;
+  g_in_scene_frames.fetch_add(1, std::memory_order_relaxed);
+  std::lock_guard lock(g_cap_mutex);
+  g_in_scene = true;
+}
+
 void frame(IDXGISwapChain* swap) {
   g_presents.fetch_add(1, std::memory_order_relaxed);
   ComPtr<ID3D11Device> device;
@@ -2419,6 +2780,13 @@ void frame(IDXGISwapChain* swap) {
   ComPtr<ID3D11DeviceContext> c;
   device->GetImmediateContext(&c);
   install_capture(c.Get());
+  {
+    ComPtr<ID3D11Resource> back;
+    if (SUCCEEDED(swap->GetBuffer(0, IID_PPV_ARGS(&back)))) {
+      std::lock_guard lock(g_cap_mutex);
+      g_passes_back = back.Get();
+    }
+  }
   end_capture_frame();
   const Settings s = settings();
   {
@@ -2448,9 +2816,16 @@ void frame(IDXGISwapChain* swap) {
     }
   }
   float pose[skate::kBoardBodies * 16];
-  // The board from the tick Snake was posed from this frame, else the latest.
+  bool in_scene = false;
+  {
+    std::lock_guard lock(g_cap_mutex);
+    in_scene = g_in_scene_last;
+  }
+  // The board from the tick Snake was posed from this frame, else the latest; none if it went
+  // into the scene already.
   bool have_board = false;
-  if (g_board_loaded && g_frame_board_valid) {
+  if (in_scene) {
+  } else if (g_board_loaded && g_frame_board_valid) {
     memcpy(pose, g_frame_board, sizeof(pose));
     have_board = true;
   } else if (g_board_loaded) {
@@ -2468,6 +2843,11 @@ void frame(IDXGISwapChain* swap) {
   Mat game_pers, game_cam_view;
   uint32_t game_uses = 0;
   const bool have_game_camera = s.camera != Settings::Camera::Object && captured_camera(game_pers, game_cam_view, game_uses);
+  if (in_scene && !have_snake) {
+    g_drawn.fetch_add(1, std::memory_order_relaxed);
+    g_was_drawing = true;
+    return;
+  }
   if ((!have_board && !have_snake) || (!have_skate_camera && !have_game_camera && !game::camera(eye, target))) {
     g_was_drawing = false;
     return;
@@ -2480,8 +2860,6 @@ void frame(IDXGISwapChain* swap) {
   ComPtr<ID3D11RenderTargetView> rtv;
   if (bb.Width == 0 || bb.Height == 0 || FAILED(device->CreateRenderTargetView(back.Get(), nullptr, &rtv))) return;
 
-  SavedState saved;
-  save(c.Get(), saved);
   const float aspect = s.aspect > 0.f ? s.aspect : static_cast<float>(bb.Width) / static_cast<float>(bb.Height);
   const Vec eye_v{eye.x, eye.y, eye.z}, target_v{target.x, target.y, target.z};
   const Mat vp = have_skate_camera  ? skate_vp
@@ -2490,86 +2868,10 @@ void frame(IDXGISwapChain* swap) {
                            look_at(eye_v, target_v, s.flip_z));
   // The game's projection gives depth = k / distance (nearer = larger), so compare the other way.
   const bool reversed = have_skate_camera || (have_game_camera && game_pers.at(2, 3) > 0.f);
-
-  ID3D11DepthStencilView* dsv = pick_depth(device.Get(), c.Get(), bb, s, reversed);
-
-  ID3D11RenderTargetView* target_rtv = rtv.Get();
-  c->OMSetRenderTargetsAndUnorderedAccessViews(1, &target_rtv, dsv, 0, D3D11_KEEP_UNORDERED_ACCESS_VIEWS, nullptr, nullptr);
-  c->OMSetDepthStencilState((reversed ? g_gpu.depth_own_rev : g_gpu.depth_own).Get(), 0);
-  c->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
-  const D3D11_VIEWPORT viewport{0.f, 0.f, static_cast<float>(bb.Width), static_cast<float>(bb.Height), 0.f, 1.f};
-  c->RSSetViewports(1, &viewport);
-  c->RSSetState(g_gpu.rs.Get());
-  c->IASetInputLayout(g_gpu.layout.Get());
-  c->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-  ID3D11Buffer* vb = g_gpu.vb.Get();
-  const UINT stride = sizeof(MgskBoardVertex), offset = 0;
-  c->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
-  c->IASetIndexBuffer(g_gpu.ib.Get(), DXGI_FORMAT_R16_UINT, 0);
-  c->VSSetShader(g_gpu.vs.Get(), nullptr, 0);
-  c->PSSetShader(g_gpu.ps.Get(), nullptr, 0);
-  c->GSSetShader(nullptr, nullptr, 0);
-  c->HSSetShader(nullptr, nullptr, 0);
-  c->DSSetShader(nullptr, nullptr, 0);
-  ID3D11Buffer* cb = g_gpu.cb.Get();
-  c->VSSetConstantBuffers(0, 1, &cb);
-  c->PSSetConstantBuffers(0, 1, &cb);
-  ID3D11SamplerState* sampler = g_gpu.sampler.Get();
-  c->PSSetSamplers(0, 1, &sampler);
-  const bool textured = s.textures && !g_gpu.board_srvs.empty();
-
-  // Engine metres -> MGS3 millimetres, same axes.
-  const Mat to_mm = place({0.f, 0.f, 0.f}, {kMmPerUnit, kMmPerUnit, kMmPerUnit});
-  Vec deck{};
-  if (have_board) {
-    for (int body = 0; body < skate::kBoardBodies; ++body) {
-      Mat local;
-      memcpy(local.m, pose + body * 16, sizeof(local.m));
-      const Mat world = mul(to_mm, local);
-      if (body == MGSK_BODY_DECK) deck = {world.at(0, 3), world.at(1, 3), world.at(2, 3)};
-      if (textured && !g_part_runs[body].empty()) {
-        constexpr float kWhite[3] = {255, 255, 255};
-        for (const TexturedRange& run : g_part_runs[body]) {
-          draw(c.Get(), vp, world, kWhite, run.range, g_gpu.board_srvs[run.texture].Get());
-        }
-      } else {
-        draw(c.Get(), vp, world, part_color(body), g_parts[body]);
-      }
-    }
-  }
   const Vec at_snake{snake.x, snake.y, snake.z};
-  if (have_snake) {
-    // 15 cm yellow cube on Snake's position, 1 m bars along +X (red), +Y (green), +Z (blue).
-    constexpr float kYellow[3] = {255, 220, 40}, kRed[3] = {230, 40, 40}, kGreen[3] = {40, 200, 60}, kBlue[3] = {50, 90, 255};
-    draw(c.Get(), vp, place(at_snake, {150.f, 150.f, 150.f}), kYellow, g_cube);
-    draw(c.Get(), vp, place({snake.x + 500.f, snake.y, snake.z}, {1000.f, 40.f, 40.f}), kRed, g_cube);
-    draw(c.Get(), vp, place({snake.x, snake.y + 500.f, snake.z}, {40.f, 1000.f, 40.f}), kGreen, g_cube);
-    draw(c.Get(), vp, place({snake.x, snake.y, snake.z + 500.f}, {40.f, 40.f, 1000.f}), kBlue, g_cube);
-  }
-  if (s.depth_debug && have_board && GetTickCount64() - g_depth_debug_at >= 1000) {
-    g_depth_debug_at = GetTickCount64();
-    float clip[4];
-    for (int i = 0; i < 4; ++i) clip[i] = vp.at(i, 0) * deck.x + vp.at(i, 1) * deck.y + vp.at(i, 2) * deck.z + vp.at(i, 3);
-    if (clip[3] <= 0.f) {
-      log("render: depth_debug: deck behind the camera");
-    } else {
-      const float x = (clip[0] / clip[3] + 1.f) * 0.5f * static_cast<float>(bb.Width);
-      const float y = (1.f - clip[1] / clip[3]) * 0.5f * static_cast<float>(bb.Height);
-      const float own = clip[2] / clip[3];
-      float scene_d = 0.f;
-      const bool on_screen = x >= 0.f && y >= 0.f && x < static_cast<float>(bb.Width) && y < static_cast<float>(bb.Height);
-      if (on_screen && probe_scene_depth(c.Get(), x * g_depth_test.params[0], y * g_depth_test.params[1], scene_d)) {
-        log("render: depth_debug: deck centre at pixel %.0f %.0f, its depth %.6f (k/w: distance %.0f mm); scene depth "
-            "there %.6f (x%.0f samples, farthest) -> board %s (bias %.4f)",
-            x, y, own, clip[3], scene_d, g_depth_test.extra[0], scene_d > own * (1.f + s.depth_bias) ? "hidden" : "shown",
-            s.depth_bias);
-      } else {
-        log("render: depth_debug: deck centre at pixel %.0f %.0f, its depth %.6f; no scene depth to compare (%s)", x, y,
-            own, on_screen ? "depth_game off or unusable" : "off screen");
-      }
-    }
-  }
-  restore(c.Get(), saved);
+  Vec deck{};
+  draw_board(device.Get(), c.Get(), rtv.Get(), bb, vp, reversed, have_board ? pose : nullptr,
+             have_snake ? &at_snake : nullptr, s, deck);
 
   const uint64_t drawn = g_drawn.fetch_add(1, std::memory_order_relaxed) + 1;
   g_width = bb.Width;
@@ -2752,6 +3054,11 @@ std::string set(const std::string& key, const std::string& value) {
     g_cbscan_state = 1;
     return "ok scanning next frame";
   }
+  if (key == "passes") {  // `render passes now`: log the next frame's render targets in order
+    std::lock_guard lock(g_cap_mutex);
+    g_passes_state = 1;
+    return "ok tracing next frame";
+  }
   if (key == "palette") {  // `render palette now`: dump the next frame's skinned draws
     std::lock_guard lock(g_cap_mutex);
     g_dump_state = 1;
@@ -2797,6 +3104,7 @@ Status status() {
   s.hooked = g_hooked;
   s.presents = g_presents;
   s.drawn = g_drawn;
+  s.in_scene = g_in_scene_frames;
   s.snake_frames = g_snake_frames;
   s.width = g_width;
   s.height = g_height;

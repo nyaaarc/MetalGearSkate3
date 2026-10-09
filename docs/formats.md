@@ -448,6 +448,12 @@ MGS1's HZD (FoxdieTeam/mgs_reversing `fmt_hzd.h`) is not the layout; vocabulary 
 - **Position:** Snake's rest offsets down his hierarchy (lengths kept exactly), then the whole
   skeleton shifted so his ankle midpoint (17, 21) sits on the skater's. Anchoring at the hips
   instead would sink his feet ~70 mm into the deck (legs 8% longer).
+- **Carried board:** off the board (`BipedGround`, `BipedAir`) the skater carries it in one
+  hand. With rotations retargeted onto Snake's own lengths and the ankles anchored, Snake's hand
+  is 129-157 mm from the skater's (measured 2026-10-09), so the board hung beside it. The skate
+  thread moves the board by that gap (the skater hand nearest the deck, within 0.6 m), eased over
+  8 ticks (skate.cpp `Carry`). His hand is nearer his body than the skater's, so the board now
+  clips his legs a little; the user accepted that.
 - **`mirror_x`:** reflects the skater through his own sagittal plane (root-local X) and swaps
   LEFT/RIGHT. Because the skater stands sideways on the board, this also flips the stance (feet
   swap board ends). Off until MGS3's handedness is settled.
@@ -550,8 +556,44 @@ shadow-like draws) appeared in this frame.
   his frozen object (held weapon, items) gets the same huge bounds as his own so the game doesn't
   cull it when he rides away from where he got on (pose.cpp keep_drawn; put back when he stops,
   only on objects whose model pointer and radius are still ours).
+- **Where his draws sit, and other characters' (s092a, 2026-10-09):** the plugin matched every
+  skinned main-camera draw's slots against his bones, wherever the draw was. A guard in a pose
+  close to his frozen one had slots that passed (`match_bone` allows ~0.6 of rotation and 60 mm),
+  and posed from the skater, metres from the frozen object, they stretched across the stage
+  (user screenshots: long beams from guards toward the camera). Over 10 minutes of the user's
+  play (36000 frames): his body's 546 draws sit exactly on his object's origin; his head's and
+  headband rig's (+12 or +22 draws, on some frames only) 588-681 mm from it and 122-189 mm from
+  the nearest of his game joints. Something passing his frozen object (148 extra draws posed for
+  half a second, probably a guard) came within 658 mm of the origin but never nearer than 257 mm
+  to a joint. Only draws within 300 mm of his origin or 220 mm of one of his joints are matched
+  now (render.cpp `kOwnBodyMm`, `kOwnJointMm`); 100-480 other skinned draws a frame are skipped
+  at s092a, and frames held 16.7 ms with guards on screen (the user had seen the game slow down).
+  `own_far_mm` and `own_joint_mm` in `render metrics` keep the margins in view.
 - **Game crash at `exe+0x115F64` (reading 0):** in a function called from the input code
   (`exe+110E92`, near the pad copy at `exe+111C80`) that fetches an interface and walks 16 digital
   and 4 analog handles through its vtable (+0x80, +0xA0). Seen twice (once in Windows' crash log
   before this work, once after a stealth toggle while skating with the harness switching focus);
   looks like a null controller/Steam Input interface, not our code.
+
+### The frame's passes (s092a, 3440x1440, 2026-10-09)
+
+`render passes now` logs, for one frame, every Unmap and UpdateSubresource grouped into runs by
+the colour and depth targets bound when it was written. One frame while skating:
+
+1. The back buffer with a D32 depth: 8 constant-buffer writes (frame setup).
+2. The scene: a 3440x1440 x4 colour target with its R24G8 x4 depth, ~2880 main-camera $Globals
+   writes, interleaved with four 1024x1024 side passes of 1-3 draws each.
+3. Another 3440x1440 target and depth: 8 $Globals writes (the scene resolved into it), then
+   1720x720 and 860x360 targets (bloom and blur), then 367 $Globals writes and 84 with
+   vertex-buffer writes on it (effects, HUD).
+4. The back buffer: 94 vertex- and 91 index-buffer writes (the final copy and on-screen text).
+
+The board used to be drawn at Present, over the finished frame, so it covered the HUD and
+subtitles. It is now drawn into the scene's own target at the first write after the game binds
+another target of the same size (render.cpp `scene_pass_ended`, `draw_board_in_scene`), so the
+game's post-processing and HUD go over it like the rest of the scene. The scene target is the
+colour target bound with the scene depth, compared by texture (the depth view bound isn't the
+object `pick_scene_depth` holds). The board's own depth buffer follows the target's x4 samples.
+The state save covers PS shader resources 0-15, since binding the scene target unbinds it
+wherever the game had it as an input. A frame where this didn't happen falls back to Present;
+`render in_scene off` forces the old way, and `state.render.in_scene` counts frames drawn in it.

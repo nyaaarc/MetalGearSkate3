@@ -66,6 +66,9 @@ struct Ffi {
   decltype(&mgsk_snake_pose) snake_pose;
   decltype(&mgsk_state) state;
   decltype(&mgsk_rail_count) rail_count;
+  decltype(&mgsk_bone_count) bone_count;
+  decltype(&mgsk_bone_name) bone_name;
+  decltype(&mgsk_bones) bones;
 };
 
 // From skate_ffi.dll when it has the .geom reader: decodes and installs a stage's collision,
@@ -191,7 +194,8 @@ bool load_ffi(Ffi& f) {
          bind(f.period, "mgsk_period") && bind(f.activate, "mgsk_activate") && bind(f.tick, "mgsk_tick") &&
          bind(f.root, "mgsk_root") && bind(f.last_error, "mgsk_last_error") &&
          bind(f.retarget_init, "mgsk_retarget_init") && bind(f.snake_pose, "mgsk_snake_pose") &&
-         bind(f.state, "mgsk_state") && bind(f.rail_count, "mgsk_rail_count");
+         bind(f.state, "mgsk_state") && bind(f.rail_count, "mgsk_rail_count") &&
+         bind(f.bone_count, "mgsk_bone_count") && bind(f.bone_name, "mgsk_bone_name") && bind(f.bones, "mgsk_bones");
 }
 
 // The stage's collision file, from the first `.geom` entry in its manifest. The manifests sit
@@ -390,6 +394,81 @@ class Pacer {
   bool free_ = true;
 };
 
+// Off the board (BipedGround, BipedAir) the skater carries it in one hand. Snake takes the
+// skater's joint rotations on his own bone lengths, anchored at the ankles, so his hand ends up
+// centimetres from the skater's and the board hung beside it, not in it (user, 2026-10-09).
+// Carried, the board moves by the gap between the two hands, eased in and out over a few ticks
+// so it doesn't jump as he picks it up or puts it down.
+class Carry {
+ public:
+  // The skater's hands, and Snake's bones they drive (retarget.rs MAP: 9 left, 14 right; the
+  // other way round when the skater is mirrored).
+  void init(const Ffi& f, const MgskSession* session, bool mirror) {
+    const int count = f.bone_count(session);
+    if (count <= 0) return;
+    bones_.assign(static_cast<size_t>(count) * 16, 0.f);
+    for (int i = 0; i < count; ++i) {
+      char name[64] = {};
+      if (f.bone_name(session, static_cast<uint32_t>(i), name, sizeof(name)) < 0) continue;
+      if (strcmp(name, "LEFTHAND") == 0) hands_[0] = i;
+      if (strcmp(name, "RIGHTHAND") == 0) hands_[1] = i;
+    }
+    snake_hands_[0] = mirror ? 14 : 9;
+    snake_hands_[1] = mirror ? 9 : 14;
+    if (hands_[0] < 0 || hands_[1] < 0) log("skate: the skater has no LEFTHAND/RIGHTHAND bones; the carried board isn't moved to Snake's hand");
+  }
+
+  // `root`: the skater's root (column-major, metres); `snake`: his bones (MGS3 layout, mm) or
+  // null; `board`: the board bodies (column-major, metres), moved in place.
+  void apply(const Ffi& f, const MgskSession* session, const char* state, const float* root, const float* snake,
+             float* board) {
+    constexpr float kStep = 1.f / 8;     // about 0.13 s in or out at 60 Hz
+    constexpr float kHeldM = 0.6f;       // a hand this close to the deck holds it
+    bool carried = snake && hands_[0] >= 0 && hands_[1] >= 0 && strncmp(state, "Biped", 5) == 0 &&
+                   f.bones(session, bones_.data(), static_cast<uint32_t>(bones_.size() / 16)) * 16 ==
+                       static_cast<int>(bones_.size());
+    if (carried) {
+      const float* deck = board + MGSK_BODY_DECK * 16;
+      float best = kHeldM * kHeldM;
+      int held = -1;
+      float hand[2][3];
+      for (int h = 0; h < 2; ++h) {
+        const float* b = bones_.data() + hands_[h] * 16;
+        float d2 = 0;
+        for (int r = 0; r < 3; ++r) {
+          hand[h][r] = root[r] * b[12] + root[4 + r] * b[13] + root[8 + r] * b[14] + root[12 + r];
+          d2 += (hand[h][r] - deck[12 + r]) * (hand[h][r] - deck[12 + r]);
+        }
+        if (d2 < best) {
+          best = d2;
+          held = h;
+        }
+      }
+      carried = held >= 0;
+      if (carried) {
+        const float* s = snake + snake_hands_[held] * 16;
+        for (int r = 0; r < 3; ++r) offset_[r] = s[12 + r] / kMmPerUnit - hand[held][r];
+        if (weight_ <= 0.f) {
+          log("skate: carrying the board in the %s hand; moved %.0f mm onto Snake's", held ? "right" : "left",
+              kMmPerUnit * std::sqrt(offset_[0] * offset_[0] + offset_[1] * offset_[1] + offset_[2] * offset_[2]));
+        }
+      }
+    }
+    weight_ = std::clamp(weight_ + (carried ? kStep : -kStep), 0.f, 1.f);
+    if (weight_ <= 0.f) return;
+    for (int body = 0; body < kBoardBodies; ++body) {
+      for (int r = 0; r < 3; ++r) board[body * 16 + 12 + r] += weight_ * offset_[r];
+    }
+  }
+
+ private:
+  std::vector<float> bones_;
+  int hands_[2] = {-1, -1};
+  int snake_hands_[2] = {9, 14};
+  float offset_[3] = {};
+  float weight_ = 0.f;
+};
+
 // A session built ahead on another thread. The engine can leave non-finite state in a session
 // (docs/devlog.md, run 8), and a fresh one takes seconds to load, so one is kept ready to swap in.
 class Spare {
@@ -462,6 +541,8 @@ DWORD WINAPI run(LPVOID) {
   g_shared->session = nullptr;
   if (!session) return 0;
   if (posing) log("skate: retargeting onto %s (mirror_x %d)", mdl.string().c_str(), mirror);
+  Carry carry;
+  if (posing) carry.init(f, session, mirror != 0);
   // The skater's sound (Skate 3's audio runtime in the DLL, from setup's audio export).
   if (ini_string("audio", "1") != "0" && audio::start(g_ffi_module, std::stof(ini_string("audio_volume", "4")))) {
     audio::use_session(session, data.c_str());
@@ -784,13 +865,14 @@ DWORD WINAPI run(LPVOID) {
       for (int i = 0; i < 3; ++i) camera[i] *= kMmPerUnit;
     }
     const bool have_snake = posing && f.snake_pose(session, snake_bones, pose::kSnakeBones) == pose::kSnakeBones;
-    publish_pose(pose_fn && pose_fn(session, pose, kBoardBodies) == kBoardBodies ? pose : nullptr,
-                 have_camera ? camera : nullptr, have_snake ? snake_bones : nullptr);
+    if (f.state(session, st.engine_state, sizeof(st.engine_state)) < 0) st.engine_state[0] = 0;  // returns name length
+    const bool have_board = pose_fn && pose_fn(session, pose, kBoardBodies) == kBoardBodies;
+    if (have_board) carry.apply(f, session, st.engine_state, m, have_snake ? snake_bones : nullptr, pose);
+    publish_pose(have_board ? pose : nullptr, have_camera ? camera : nullptr, have_snake ? snake_bones : nullptr);
     {
       const float dx = m[12] - st.skater[0], dz = m[14] - st.skater[2];
       st.speed_mps = placed ? 0.f : std::sqrt(dx * dx + dz * dz) / period;
       placed = false;
-      if (f.state(session, st.engine_state, sizeof(st.engine_state)) < 0) st.engine_state[0] = 0;  // returns name length
       note_recent(st.engine_state, m[13], st.speed_mps);
     }
     st.skater[0] = m[12];
