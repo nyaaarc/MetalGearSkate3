@@ -39,8 +39,11 @@ with the game's camera following. See "What works" below.
    Every download is asked for first and pinned by version and SHA-256. Options:
    `setup.cmd -DryRun` (show the actions only), `-Skate3 <path>`, `-GameDir <path>`, `-DataDir <path>`,
    `-DataOnly` (only reconvert the Skate 3 data), `-SkipConvert`, `-Yes`.
-3. Start MGS3, load a stage (Groznyj Grad, `s091a`, from the developer menu's stage select is a
-   good one) and press **F5** to start or stop skating.
+3. Start MGS3, load a stage and press **F5** to start or stop skating. Two stages are tested
+   every release, both from the game's developer menu: Groznyj Grad Southwest (`s091a` in the
+   stage select) and `(s092b)Night` (under `s092a[+]`). To start the game in that menu, install
+   with `-WithHDFix` and set `Start Game in Developer Menu=1` in `plugins\MGSHDFix.settings`.
+   F5 works on other stages and in the story too, but those aren't tested.
 
 Uninstall: delete `plugins\MetalGearSkate.asi`, the `plugins\MetalGearSkate` folder, `plugins\skate_ffi.dll` and `plugins\MetalGearSkate.ini`,
 and the `%LOCALAPPDATA%\MetalGearSkate` folder.
@@ -59,6 +62,17 @@ and the `%LOCALAPPDATA%\MetalGearSkate` folder.
 | Right stick: push up, then flick back | nollie |
 | Ollie onto a ledge or rail | grind |
 | Y | step off the board and back on |
+
+## Troubleshooting
+
+- **On foot, every button does everything, or nothing works:** use Konami's default Steam Input
+  layout for MGS3. Community layouts built on the Gamepad template leave the game's actions
+  unbound. If a Steam Controller is connected, Steam can list it as a broken first controller
+  and the Xbox pad stops working: unplug it, or move the pad first in Steam's controller order.
+  `logs\MGSHDFix_Game.log` lists the controllers and bindings the game sees. (With MGSHDFix's
+  `Skip Launcher`, the game's button map stays empty; the mod fills it in.)
+- **Something went wrong:** `plugins\MetalGearSkate.log` says what the mod did. Include it in a
+  bug report.
 
 ## Trying it (developers)
 
@@ -155,13 +169,15 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 ## What's missing
 
 - A stable lookup for the camera and skeleton
-- A held weapon and Snake's shadow are unchecked while skating (his gear and head now follow the pose)
-- Board textures not yet checked in game (simple diffuse lighting, no specular)
+- Board lighting is simple diffuse (no specular)
 - Settings menu
 - Skateparks in game: props (and later a whole spot such as Black Box Park) placed on MGS3 stages,
   combined with the stage collision and drawn like the board. The plan is in `docs/skatepark.md`.
 - Audio beyond the skater: Skate 3's ambience, world emitters and speech aren't played (MGS3's own
-  sound keeps playing); the skater's sound hasn't been listened to in game yet
+  sound keeps playing)
+- Guards still see the skater (the stealth camouflage made Snake invisible while skating, so it is
+  off); knocking guards over with the board
+- Carried off the board, the board clips Snake's legs a little
 - Setup is tested in dry runs and data-only runs (ISO → extract → convert → engine check); a full
   install on a clean machine hasn't been tried yet
 
