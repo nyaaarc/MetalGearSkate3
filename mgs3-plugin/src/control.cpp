@@ -202,11 +202,13 @@ std::string run(const std::string& line) {
     if (!key.empty() && value.empty()) return "error: usage render [<key> <value>]";
     return render::set(key, value);
   }
-  if (verb == "stage") {
+  if (verb == "stage") {  // stage <code> [<x> <y> <z>]: with a spot, Snake is held there on arrival
     std::string name;
     in >> name;
-    if (name.empty()) return "error: usage stage <code>";
-    return game::request_stage(name.c_str()) ? "ok" : "error: stage loading unavailable";
+    if (name.empty()) return "error: usage stage <code> [<x> <y> <z>]";
+    game::Vec3 at{};
+    const bool arrive = static_cast<bool>(in >> at.x >> at.y >> at.z);
+    return game::request_stage(name.c_str(), arrive ? &at : nullptr) ? "ok" : "error: stage loading unavailable";
   }
   if (verb == "mark") {
     std::string rest;

@@ -139,7 +139,10 @@ void __fastcall on_update(uint8_t* cam) {
     }
   }
   // After this frame's snapshot was taken: the engine's next tick is the next frame's.
-  if (cam == g_main) skate::frame();
+  if (cam == g_main) {
+    game::frame();
+    skate::frame();
+  }
   g_hook.call<void>(cam);
   if (cam == g_main && g_driving.load(std::memory_order_relaxed)) {
     std::lock_guard lock(g_snap_mutex);

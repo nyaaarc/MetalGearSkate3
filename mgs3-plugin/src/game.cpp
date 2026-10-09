@@ -108,6 +108,19 @@ ChangeScenarioFn g_change_scenario = nullptr;
 int* g_load_request = nullptr;
 uint8_t** g_linkvarbuf = nullptr;
 char g_pending_stage[16] = {};
+// Where Snake goes on arriving at the requested stage (request_stage): 0 none, 1 requested, 2
+// loading (until a new Snake is on that stage), 3 holding him there for `frames` more frames.
+// Guarded by g_pad_mutex.
+struct Arrival {
+  int phase = 0;
+  char stage[16] = {};
+  Vec3 at{};
+  int frames = 0;
+  const Vec3* before = nullptr;  // Snake when the load started, and where he was
+  Vec3 before_at{};
+};
+Arrival g_arrival;
+constexpr int kArrivalFrames = 120, kArrivalWaitFrames = 3600;
 
 // Logging hooks to learn how the game itself loads stages (developer menu, story flow), so the
 // harness can copy the exact arguments. Original functions are called through these.
@@ -197,6 +210,12 @@ void __fastcall on_pad_copy(uint8_t* dst, uint8_t* src) {
       if (g_pending_stage[0] && can_load) {
         load_stage_now(g_pending_stage);
         g_pending_stage[0] = 0;
+        if (g_arrival.phase == 1) {
+          g_arrival.phase = 2;
+          g_arrival.frames = kArrivalWaitFrames;
+          g_arrival.before = snake_position();
+          if (g_arrival.before) g_arrival.before_at = *g_arrival.before;
+        }
       }
       while (!g_inject.empty() && g_inject.front().frames <= 0) g_inject.pop_front();
       if (!g_inject.empty() && !g_engine_takes_injection.load(std::memory_order_relaxed)) {
@@ -381,11 +400,46 @@ void inject_pad(uint16_t buttons, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry
   if (frames > 0) g_inject.push_back({buttons, {rx, ry, lx, ly}, frames});
 }
 
-bool request_stage(const char* name) {
+void frame() {
+  std::lock_guard lock(g_pad_mutex);
+  if (g_arrival.phase < 2) return;
+  const char* stage = current_stage();
+  Vec3* snake = snake_position();
+  const bool here = snake && stage && strcmp(stage, g_arrival.stage) == 0;
+  if (g_arrival.phase == 2) {
+    // A new Snake on that stage (another object, or the old one moved): hold him from his first
+    // frame, before the game's update can find him under the stage. GM_LoadRequest isn't back to
+    // 0 by then.
+    const Vec3 gap{here ? snake->x - g_arrival.before_at.x : 0.f, here ? snake->y - g_arrival.before_at.y : 0.f,
+                   here ? snake->z - g_arrival.before_at.z : 0.f};
+    if (here && (snake != g_arrival.before || gap.x * gap.x + gap.y * gap.y + gap.z * gap.z > 1000.f * 1000.f)) {
+      g_arrival.phase = 3;
+      g_arrival.frames = kArrivalFrames;
+      log("game: arrived at %s at %.0f %.0f %.0f; holding Snake at %.0f %.0f %.0f (mm)", stage, snake->x, snake->y,
+          snake->z, g_arrival.at.x, g_arrival.at.y, g_arrival.at.z);
+    } else if (--g_arrival.frames <= 0) {
+      log("game: no Snake arrived at %s; not holding him", g_arrival.stage);
+      g_arrival.phase = 0;
+      return;
+    }
+  }
+  if (g_arrival.phase == 3) {
+    if (here) *snake = g_arrival.at;
+    if (--g_arrival.frames <= 0) g_arrival.phase = 0;
+  }
+}
+
+bool request_stage(const char* name, const Vec3* arrive) {
   if (!g_set_area || !g_change_scenario || !g_load_request || !g_linkvarbuf) return false;
   if (strlen(name) >= sizeof(g_pending_stage)) return false;
   std::lock_guard lock(g_pad_mutex);
   strcpy_s(g_pending_stage, name);
+  g_arrival = {};
+  if (arrive) {
+    g_arrival.phase = 1;
+    strcpy_s(g_arrival.stage, name);
+    g_arrival.at = *arrive;
+  }
   return true;
 }
 

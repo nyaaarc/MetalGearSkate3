@@ -80,8 +80,12 @@ bool take_injected(Pad& out);
 
 // Load a stage by code (e.g. "s091a", or "select" for the developer menu) the way MGSHDFix's
 // "return to developer menu" does. Runs on the game thread at the next pad update. False if
-// the functions weren't found or the name is too long.
-bool request_stage(const char* name);
+// the functions weren't found or the name is too long. With `arrive`, Snake is held there (mm,
+// his waist) for his first 2 s on the new stage: on a fresh launch a direct load puts him under
+// s092a/s092b, and the game kills him (docs/formats.md, "Stage loading").
+bool request_stage(const char* name, const Vec3* arrive = nullptr);
+// Once per game frame (the main camera's update, focus or not): holds Snake on his arrival spot.
+void frame();
 
 // Test harness: replace pad 0 with this state for the next `frames` game frames (before the
 // plugin reads it and before blocking), as if a controller were held. 0 frames cancels.

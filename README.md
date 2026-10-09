@@ -101,7 +101,8 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
   moves him in game). Camera eye/target and Snake's skeleton are mapped (`docs/formats.md`).
 
 - Skating in game: F5 hands Snake to the Skate 3 engine using the game's own pad state, so any
-  Steam Input controller works. Checked in game (run 15, s091a): pushes build 2.7, 4.9, 7.6 m/s;
+  Steam Input controller works. The regression gate rides both release stages, s091a and s092b.
+  Checked in game (run 15, s091a): pushes build 2.7, 4.9, 7.6 m/s;
   ollie, kickflip, heelflip and nollie leave the ground (~1 m) and land; carving works, and holding B
   brakes (5.6 to 0.1 m/s in 2 s, checked by the regression gate).
   Grinds (50-50 into 5-0 on a ledge) and bails (wipeout, then the engine's respawn) work (run 16).

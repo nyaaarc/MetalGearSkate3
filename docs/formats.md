@@ -261,6 +261,13 @@ analogues to find, guided by the MGS2 patterns and the GirianSeed decomp.
   before a direct load does not fix the spawn, so the start point is set elsewhere (the scenario
   stream entry). Link-variable `+1636/+1640/+1644` (int32 x, y, z) track Snake's live position;
   they are not the spawn input.
+- On a fresh launch, s092b's Snake first exists at (0, 800, 0); within moments the game has him
+  at (-306, -97062, 244) and shows "SNAKE IS DEAD" (to the user, he ran off an edge). Writing his
+  position every frame from the first frame he exists, in the main camera's update (which runs
+  with or without focus, unlike the pad copy), keeps him alive (2026-10-09). `GM_LoadRequest` is
+  not back to 0 by then, so arrival is a new Snake object on that stage, or the old one moved
+  more than 1 m. After 2 s the game walks him back onto its own route (82 m away on s092b), so
+  the harness skates on within the hold (`stage <code> <x> <y> <z>`, game.cpp `frame`).
 
 ## `.geom` (collision) — decoded, reader `tools/geom.py`
 
