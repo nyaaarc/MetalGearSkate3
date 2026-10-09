@@ -219,6 +219,24 @@ analogues to find, guided by the MGS2 patterns and the GirianSeed decomp.
 - A stage load during boot (stage `init`/`title`) hangs the game in its script interpreter
   (`exe+E5xxx`/`E60D9` recursion): `request_stage` now waits for `select` or a stage.
 
+### The button map and MGSHDFix's "Skip Launcher" (2026-10-09)
+
+- **The map:** the game reads actions through ten int32 PS2 button indices at `exe+1E20020`
+  (MC 3.0.0), 0-9 once set. A copy function (ten `mov eax,[table]; mov [map],eax` pairs) fills it
+  from a table at `exe+1E1FFE0`.
+- **The init:** the control config init at `exe+34FD0` fills that table. Signature from MGSHDFix
+  (MIT, `src/fixes/pressure_inputs.cpp`): `48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 41 54
+  41 55 41 56 41 57 48 83 EC ?? 45 33 F6`. Its only direct caller is at
+  `exe+152939`.
+- **What skipping the launcher does:** with MGSHDFix's `Skip Launcher=1` both the table and the
+  map stay zero (read from memory). Every face, shoulder and trigger button then arrives in
+  pad 0's source record as `0xFF06`, i.e. all of them at once. Start and Select still come
+  through alone. Skating reads XInput directly, so it was unaffected.
+- **Vanilla:** a launch through the launcher has 0-9 in both.
+- **The repair:** MGSHDFix's newer pressure-input code reruns the init when the map is zero, but
+  only with its pressure feature on. The plugin now does the same in its pad copy hook and copies
+  the table in: one attempt on the first frame gives 0-9.
+
 ### Stage loading (how the developer menu does it)
 
 - `GM_SetArea(int id, const char* name)`: `id` is `StrCode` (24-bit rotate-5-and-add) of the

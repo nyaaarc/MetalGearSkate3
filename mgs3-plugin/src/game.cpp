@@ -53,6 +53,39 @@ constexpr size_t kPadCopyCallFromSig = 0x2E;
 // stick copy seen changing with the left stick; everything else from +4 is buttons/pressure.
 constexpr size_t kSrcSticks = 0x08, kSrcSticks2 = 0x22;
 
+// The game's action -> button map: ten int32 PS2 button indices (0..9 once set), copied from a
+// table the game's control config init fills. The launcher runs that init; MGSHDFix's "Skip
+// Launcher" skips it, so both stay zero and every action reads as every button: on foot any face
+// button pressed them all (skating reads XInput and was unaffected). While the map is zero the pad
+// copy runs the init and copies the table, as MGSHDFix's newer pressure-input code does (MIT,
+// src/fixes/pressure_inputs.cpp, RepairControlMap; same signatures). MC 3.0.0: init exe+34FD0,
+// table exe+1E1FFE0, map exe+1E20020.
+constexpr std::string_view kControlInitSig =
+    "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 41 54 41 55 41 56 41 57 48 83 EC ?? 45 33 F6";
+// The game's copy, a function of ten `mov eax,[table+i]; mov [map+i],eax` after int3 padding. The
+// pattern matches twice; the copy is the one whose map lies less than 0x1000 above its table.
+constexpr std::string_view kControlCopySig = "CC CC CC CC CC 8B 05 ?? ?? ?? ?? 89 05 ?? ?? ?? ?? 8B 05 ?? ?? ?? ?? 89 05";
+constexpr size_t kControlEntries = 10;
+constexpr int kControlRepairsMax = 8;
+using ControlInitFn = void(__fastcall*)();
+ControlInitFn g_control_init = nullptr;
+const int32_t* g_control_table = nullptr;
+int32_t* g_control_map = nullptr;
+int g_control_repairs = 0;  // the game thread only
+
+void repair_control_map() {
+  if (!g_control_init || !g_control_map || g_control_repairs >= kControlRepairsMax) return;
+  for (size_t i = 0; i < kControlEntries; ++i) {
+    if (g_control_map[i] != 0) return;
+  }
+  ++g_control_repairs;
+  g_control_init();
+  memcpy(g_control_map, g_control_table, kControlEntries * sizeof(int32_t));
+  log("game: control map was unset (launcher skipped); ran the game's control init: %d %d %d %d %d %d %d %d %d %d",
+      g_control_map[0], g_control_map[1], g_control_map[2], g_control_map[3], g_control_map[4], g_control_map[5],
+      g_control_map[6], g_control_map[7], g_control_map[8], g_control_map[9]);
+}
+
 SafetyHookInline g_pad_copy_hook;
 std::mutex g_pad_mutex;
 Pad g_pad_copy{};
@@ -151,6 +184,7 @@ void __fastcall on_pad_copy(uint8_t* dst, uint8_t* src) {
   hooks::Guard guard;
   if (hooks::stopping()) return g_pad_copy_hook.call<void>(dst, src);
   if (src == g_pads) {  // pad 0
+    repair_control_map();
     {
       std::lock_guard lock(g_pad_mutex);
       // Only from the developer menu or a gameplay stage: a load during boot ("init", "title")
@@ -214,23 +248,25 @@ Pattern parse(std::string_view text) {
   return p;
 }
 
-std::optional<uint8_t*> scan(std::string_view signature) {
+std::vector<uint8_t*> scan_all(std::string_view signature) {
   const Pattern p = parse(signature);
   MODULEINFO info{};
   GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(nullptr), &info, sizeof(info));
   auto* begin = static_cast<uint8_t*>(info.lpBaseOfDll);
   const size_t size = info.SizeOfImage;
-  uint8_t* found = nullptr;
+  std::vector<uint8_t*> found;
   for (size_t i = 0; i + p.bytes.size() <= size; ++i) {
     size_t j = 0;
     while (j < p.bytes.size() && (p.wild[j] || begin[i + j] == p.bytes[j])) ++j;
-    if (j == p.bytes.size()) {
-      if (found) return std::nullopt;  // not unique: refuse to guess
-      found = begin + i;
-    }
+    if (j == p.bytes.size()) found.push_back(begin + i);
   }
-  if (!found) return std::nullopt;
   return found;
+}
+
+std::optional<uint8_t*> scan(std::string_view signature) {
+  const std::vector<uint8_t*> found = scan_all(signature);
+  if (found.size() != 1) return std::nullopt;  // none, or not unique: refuse to guess
+  return found[0];
 }
 
 // Target of a RIP-relative operand whose disp32 sits at `at` and whose instruction ends at `at + 4`.
@@ -282,6 +318,25 @@ bool init(core::CoreShared* shared) {
     g_load_request = reinterpret_cast<int*>(*scenario + 7 + disp);
   }
   if (const auto link = scan(kLinkVarBufSig)) g_linkvarbuf = reinterpret_cast<uint8_t**>(rip_target(*link + 3));
+  if (const auto control_init = scan(kControlInitSig)) {
+    for (uint8_t* match : scan_all(kControlCopySig)) {
+      uint8_t* table = rip_target(match + 7);  // mov eax,[rip+disp]: disp at +2 of the mov at +5
+      uint8_t* map = rip_target(match + 13);   // mov [rip+disp],eax: disp at +2 of the mov at +11
+      if (map > table && map - table <= 0x1000) {
+        g_control_table = reinterpret_cast<const int32_t*>(table);
+        g_control_map = reinterpret_cast<int32_t*>(map);
+        g_control_init = reinterpret_cast<ControlInitFn>(*control_init);
+        break;
+      }
+    }
+  }
+  if (g_control_map) {
+    log("game: control map at exe+%llX (init exe+%llX)", static_cast<unsigned long long>(
+        reinterpret_cast<uint8_t*>(g_control_map) - exe), static_cast<unsigned long long>(
+        reinterpret_cast<uint8_t*>(g_control_init) - exe));
+  } else {
+    log("game: control map not found; on-foot buttons stay broken if the launcher was skipped");
+  }
   if (g_set_area) g_set_area_hook = safetyhook::create_inline(reinterpret_cast<void*>(g_set_area), reinterpret_cast<void*>(&on_set_area));
   if (g_change_scenario) {
     g_change_scenario_hook =

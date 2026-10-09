@@ -109,6 +109,9 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
 - Stage collision: `.geom` decoded (`tools/geom.py`, Rust `skate-ffi/src/geom.rs`, identical output);
   the current stage's collision is loaded into the engine on F5.
 - Riding off the stage puts the skater back where he last rode (Snake would otherwise fall to his death).
+- On-foot controls with MGSHDFix's "Skip Launcher": the skipped launcher left the game's button
+  map empty, so every button pressed all of them. The plugin runs the game's own control setup
+  when it finds the map empty.
 - Bails no longer break the engine: a subnormal dot product (which the Xbox 360 flushed to zero)
   turned into NaN on the landing after a bail respawn; it is flushed now. If the engine still
   fails, the plugin swaps in a spare session built in the background and resumes at the last spot.
