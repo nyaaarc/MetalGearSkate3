@@ -565,10 +565,20 @@ shadow-like draws) appeared in this frame.
   headband rig's (+12 or +22 draws, on some frames only) 588-681 mm from it and 122-189 mm from
   the nearest of his game joints. Something passing his frozen object (148 extra draws posed for
   half a second, probably a guard) came within 658 mm of the origin but never nearer than 257 mm
-  to a joint. Only draws within 300 mm of his origin or 220 mm of one of his joints are matched
-  now (render.cpp `kOwnBodyMm`, `kOwnJointMm`); 100-480 other skinned draws a frame are skipped
-  at s092a, and frames held 16.7 ms with guards on screen (the user had seen the game slow down).
-  `own_far_mm` and `own_joint_mm` in `render metrics` keep the margins in view.
+  to a joint, moving 10-40 mm a frame. In the gate (a weapon equipped) a gear piece of his sat
+  681 mm from his origin and 227 mm from hand joint 43, and another draw 964 mm out: distance from
+  his joints can't separate his parts from a passer-by. What does: his off-origin draws hang from
+  his frozen object and hold still. A draw is matched when its origin is within 300 mm of his
+  object's, or within 1 m and held still (5 mm) for 4 frames (render.cpp `kOwnBodyMm`,
+  `kOwnDrawMm`, `kStillFrames`); the first 4 frames after skating on leave those parts in the
+  game's pose. 100-480 other skinned draws a frame are skipped at s092a, and frames held 16.7 ms
+  with guards on screen (the user had seen the game slow down). The 8 draws a frame that the old
+  matching posed on the gate's strip and the new rule skips are an object 128 m from him, not his
+  headband: the old code was rewriting a distant model's palette. `own_far_mm` and `far_draws` in
+  `render metrics` keep this in view.
+- **Held items in the gate:** a weapon's pieces can sit ~75 mm from the joint they hang on, as
+  the game has them, so the gate's held-item check now measures how much an item's distance from
+  its joint differs from the game's (`held_mm`; 0.0 mm with a weapon equipped), not the distance.
 - **Game crash at `exe+0x115F64` (reading 0):** in a function called from the input code
   (`exe+110E92`, near the pad copy at `exe+111C80`) that fetches an interface and walks 16 digital
   and 4 analog handles through its vtable (+0x80, +0xA0). Seen twice (once in Windows' crash log
