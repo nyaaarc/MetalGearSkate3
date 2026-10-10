@@ -263,7 +263,7 @@ void write_state() {
   snprintf(json, sizeof(json),
            "{\"tick_ms\": %lu, \"core_generation\": %u, \"stage\": \"%s\", \"snake\": %s, \"snake_yaw\": %d,\n"
            " \"life\": [%d, %d], \"alert_count\": %d,\n"
-           " \"engine_ready\": %s, \"skating\": %s, \"skater_m\": [%.3f, %.3f, %.3f], \"skater_heading_deg\": %.1f,"
+           " \"engine_ready\": %s, \"skating\": %s, \"paused\": %s, \"skater_m\": [%.3f, %.3f, %.3f], \"skater_heading_deg\": %.1f,"
            " \"speed_mps\": %.2f, \"engine_state\": \"%s\", \"collision_triangles\": %d, \"rails\": %d,\n"
            " \"recent\": {\"states\": \"%s\", \"max_y\": %.3f, \"min_y\": %.3f, \"max_speed_mps\": %.2f},\n"
            " \"pad\": {\"seen\": %s, \"buttons\": \"0x%04X\", \"lx\": %u, \"ly\": %u, \"rx\": %u, \"ry\": %u},"
@@ -276,7 +276,7 @@ void write_state() {
                     std::to_string(snake->z) + "]").c_str()
                  : "null",
            yaw ? *yaw : 0, game::link_short(game::kLinkCurrentHealth), game::link_short(game::kLinkMaxHealth),
-           game::link_short(game::kLinkAlertCount), sk.ready ? "true" : "false", sk.skating ? "true" : "false", sk.skater[0], sk.skater[1],
+           game::link_short(game::kLinkAlertCount), sk.ready ? "true" : "false", sk.skating ? "true" : "false", sk.paused ? "true" : "false", sk.skater[0], sk.skater[1],
            sk.skater[2], sk.heading_deg, sk.speed_mps, sk.engine_state, sk.collision_triangles, sk.rails, recent.states,
            recent.max_y, recent.min_y, recent.max_speed_mps, have_pad ? "true" : "false", pad.buttons,
            pad.left_x, pad.left_y, pad.right_x, pad.right_y, game::injected_frames_left(), keys_down().c_str(),

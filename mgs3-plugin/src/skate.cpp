@@ -755,8 +755,12 @@ DWORD WINAPI run(LPVOID) {
       }
     }
     st.skating = skating;
+    // Start reaches the game while skating (game.cpp); while it is paused the engine waits and the
+    // board goes quiet.
+    const bool paused = skating && game::paused();
+    st.paused = paused;
     game::engine_takes_injection(skating);
-    audio::set_playing(skating);
+    audio::set_playing(skating && !paused);
     if (skating != frozen) {
       if (skating) {
         game::freeze_snake(true);
@@ -795,6 +799,10 @@ DWORD WINAPI run(LPVOID) {
       pose::publish(nullptr);
       stealth.end();
       log("skate: player gone, off");
+      continue;
+    }
+    if (paused) {
+      set_status(st);
       continue;
     }
 

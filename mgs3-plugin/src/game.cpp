@@ -60,6 +60,12 @@ constexpr size_t kSrcSticks = 0x08, kSrcSticks2 = 0x22;
 // copy runs the init and copies the table, as MGSHDFix's newer pressure-input code does (MIT,
 // src/fixes/pressure_inputs.cpp, RepairControlMap; same signatures). MC 3.0.0: init exe+34FD0,
 // table exe+1E1FFE0, map exe+1E20020.
+// GV_PauseLevel: bit 0 set while the game is paused (its pause menu). Signature from MGSHDFix (MIT,
+// src/resources/gamevars.cpp): `test [rip+disp32], eax; mov ebp, ...`; like MGSHDFix, the first match.
+constexpr std::string_view kPauseLevelSig = "85 05 ?? ?? ?? ?? 8B 2D";
+const int* g_pause_level = nullptr;
+constexpr uint16_t kButtonStart = 0x0008;
+
 constexpr std::string_view kControlInitSig =
     "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 41 54 41 55 41 56 41 57 48 83 EC ?? 45 33 F6";
 // The game's copy, a function of ten `mov eax,[table+i]; mov [map+i],eax` after int3 padding. The
@@ -229,10 +235,18 @@ void __fastcall on_pad_copy(uint8_t* dst, uint8_t* src) {
       memcpy(&g_pad_copy, src, sizeof(Pad));
       g_pad_seen = true;
     }
-    if (g_block_input.load(std::memory_order_relaxed)) {
+    // Skating: the engine has the controller, except Start, which pauses the game. In the pause
+    // menu the game has it all (the engine waits while it is paused).
+    if (g_block_input.load(std::memory_order_relaxed) && !paused()) {
       // Idle the source before anything copies it: keep the status word, clear buttons and
       // pressure, centre the sticks. Steam Input rewrites it next poll.
+      uint16_t buttons;
+      memcpy(&buttons, src + 4, sizeof(buttons));
+      const uint8_t held = src[kSrcHeldFlag];
+      const uint16_t start = buttons & kButtonStart;
       memset(src + 4, 0, kPadSize - 4);
+      memcpy(src + 4, &start, sizeof(start));
+      if (start) src[kSrcHeldFlag] = held;
       memset(src + kSrcSticks, 0x80, 4);
       memset(src + kSrcSticks2, 0x80, 4);
     }
@@ -322,6 +336,15 @@ bool init(core::CoreShared* shared) {
     }
   } else {
     log("game: pad signature not found (or not unique)");
+  }
+  if (const std::vector<uint8_t*> pause = scan_all(kPauseLevelSig); !pause.empty()) {
+    g_pause_level = reinterpret_cast<const int*>(rip_target(pause[0] + 2));
+    log("game: pause level at exe+%llX (%zu matches)",
+        static_cast<unsigned long long>(reinterpret_cast<const uint8_t*>(g_pause_level) -
+                                        reinterpret_cast<const uint8_t*>(GetModuleHandleW(nullptr))),
+        pause.size());
+  } else {
+    log("game: pause-level signature not found; Start while skating can't stop the engine");
   }
   if (const auto stage = scan(kStageSig)) {
     g_stage = reinterpret_cast<const char*>(rip_target(*stage + 3));
@@ -456,6 +479,8 @@ int injected_frames_left() {
 }
 
 const char* current_stage() { return g_stage; }
+
+bool paused() { return g_pause_level && (*g_pause_level & 1) != 0; }
 
 bool camera(Vec3& eye, Vec3& look_at) {
   const auto* object = reinterpret_cast<const uint8_t*>(GetModuleHandleW(nullptr)) + kCameraRva;

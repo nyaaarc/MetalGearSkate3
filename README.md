@@ -4,7 +4,7 @@ Skate 3 skating inside METAL GEAR SOLID 3 (Master Collection Vol.1, Steam). Snak
 on a board driven by the Skate 3 engine, riding MGS3's own stages and collision, with
 Skate 3's controls, tricks, grinds and bails.
 
-![Snake kickflips in Groznyj Grad](docs/screenshots/kickflip.jpg)
+![Snake grinds a barrier in Groznyj Grad](docs/screenshots/grind.jpg)
 
 **No game files are included.** Setup builds what the mod needs from your own copies of both
 games.
@@ -23,7 +23,8 @@ with the game's camera following. See "What works" below.
 ## Installing
 
 1. Download a release zip and unpack it anywhere (or build from source, below).
-2. Close the game and run `setup.cmd`. It:
+2. Close the game and run `setup.cmd -WithHDFix` (recommended: MGSHDFix opens the developer menu
+   the tested stages are loaded from, below; plain `setup.cmd` installs only an ASI loader). It:
    - finds MGS3 through Steam (or asks for its folder);
    - installs an ASI loader if there isn't one ([Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader)
      v9.7.4 as `wininet.dll`; `-WithHDFix` installs [MGSHDFix](https://github.com/ShizCalev/MGSHDFix) 4.1.2 instead);
@@ -41,11 +42,28 @@ with the game's camera following. See "What works" below.
    Every download is asked for first and pinned by version and SHA-256. Options:
    `setup.cmd -DryRun` (show the actions only), `-Skate3 <path>`, `-GameDir <path>`, `-DataDir <path>`,
    `-DataOnly` (only reconvert the Skate 3 data), `-SkipConvert`, `-Yes`.
-3. Start MGS3, load a stage and press **F5** to start or stop skating. Two stages are tested
-   every release, both from the game's developer menu: Groznyj Grad Southwest (`s091a` in the
-   stage select) and `(s092b)Night` (under `s092a[+]`). To start the game in that menu, install
-   with `-WithHDFix` and set `Start Game in Developer Menu=1` in `plugins\MGSHDFix.settings`.
-   F5 works on other stages and in the story too, but those aren't tested.
+3. Set up the developer menu (below), load a stage and press **F5** to start or stop skating.
+
+### The developer menu (where the mod is tested)
+
+Every release is tested on two stages loaded from MGS3's developer menu: Groznyj Grad Southwest
+(`s091a`) and `(s092b)Night`. F5 works in the normal story too, but those areas aren't tested.
+MGSHDFix can open that menu when the game starts:
+
+1. Install with `setup.cmd -WithHDFix` (or install [MGSHDFix](https://github.com/ShizCalev/MGSHDFix)
+   4.1.2 yourself).
+2. Start the game once and close it, so MGSHDFix writes `plugins\MGSHDFix.settings`.
+3. In that file, under `[Debugging]`, set `Start Game in Developer Menu=1` (or tick it in
+   `plugins\MGSHDFix Config Tool.exe`). Optionally, under `[Launcher and Splashscreens]`,
+   `Skip Launcher=1` starts the game without the launcher window.
+4. Start the game. It opens in the developer menu, a Japanese debug menu: move with the d-pad,
+   confirm with circle (B on an Xbox pad; if nothing happens, try cross / A).
+5. Open `stage_select(snakeeater)` (not `stage_select(virtous)`), then:
+   - Groznyj Grad Southwest: `s091a[+]`, then `(s091a_0)`.
+   - `(s092b)Night`: open `s092a[+]` (just below `s091a[+]`), then `(s092b)Night`. This is the
+     escape after the torture: Snake has no gear, and picking a weapon there crashes the game
+     (with or without the mod).
+6. Press **F5** to skate.
 
 Uninstall: delete `plugins\MetalGearSkate.asi`, the `plugins\MetalGearSkate` folder, `plugins\skate_ffi.dll` and `plugins\MetalGearSkate.ini`,
 and the `%LOCALAPPDATA%\MetalGearSkate` folder.
@@ -64,6 +82,9 @@ and the `%LOCALAPPDATA%\MetalGearSkate` folder.
 | Right stick: push up, then flick back | nollie |
 | Ollie onto a ledge or rail | grind |
 | Y | step off the board and back on |
+| Start | pause the game (the skater waits until you resume) |
+
+![Snake carries the board off it in Groznyj Grad](docs/screenshots/carry.jpg)
 
 ## Troubleshooting
 
@@ -112,6 +133,10 @@ The stage's real collision is loaded on F5; the board is drawn with Skate 3's ow
    with numeric pass criteria (`docs/TESTING.md`, "Regression gate").
 
 ## What works
+
+![Snake kickflips](docs/screenshots/kickflip.jpg)
+
+![A flip on alert, under the game's own HUD](docs/screenshots/alert-flip.jpg)
 
 - `MetalGearSkate.asi` loads inside MGS3 (alongside MGSHDFix 4.1.2) and loads `skate_ffi.dll`; confirmed in game.
 - `skate_ffi.dll` runs the genuine Skate 3 engine headless on converted data: `tools/ffi_smoke.py`

@@ -239,6 +239,18 @@ analogues to find, guided by the MGS2 patterns and the GirianSeed decomp.
   only with its pressure feature on. The plugin now does the same in its pad copy hook and copies
   the table in: one attempt on the first frame gives 0-9.
 
+### Pausing (2026-10-09)
+
+- **`GV_PauseLevel`** (`exe+1D78F6C` on MC 3.0.0): bit 0 is set while the game is paused (its
+  pause menu). Found as MGSHDFix does (MIT, `src/resources/gamevars.cpp`): `85 05 ?? ?? ?? ?? 8B 2D`
+  (`test [rip+disp32], eax`), the operand's target; one match on 3.0.0. MGSHDFix's log prints the
+  same address ("GameVars: GV_PauseLevel address is ...").
+- **While skating**, the plugin idles pad 0's source record so the game sees no input, except
+  Start (`0x0008`, with the held flag at +6), which pauses the game. While `GV_PauseLevel` bit 0 is
+  set the source isn't idled (the pause menu gets the whole pad) and the skate thread neither ticks
+  the engine nor plays its sound (skate.cpp; `state.paused`). Checked by the user: Start mid-ride
+  pauses, the skater waits, resuming carries on.
+
 ### Stage loading (how the developer menu does it)
 
 - `GM_SetArea(int id, const char* name)`: `id` is `StrCode` (24-bit rotate-5-and-add) of the

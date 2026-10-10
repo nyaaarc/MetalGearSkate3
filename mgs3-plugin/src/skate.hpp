@@ -44,6 +44,7 @@ void request_at(float x_mm, float y_mm, float z_mm, float heading_deg);
 struct Status {
   bool ready = false;    // engine loaded
   bool skating = false;
+  bool paused = false;   // skating, with the game paused (the engine waits)
   float skater[3] = {};  // engine units (m)
   float heading_deg = 0;
   float speed_mps = 0;     // horizontal speed of the skater root

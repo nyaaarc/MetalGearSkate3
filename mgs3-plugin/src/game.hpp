@@ -86,6 +86,8 @@ bool take_injected(Pad& out);
 bool request_stage(const char* name, const Vec3* arrive = nullptr);
 // Once per game frame (the main camera's update, focus or not): holds Snake on his arrival spot.
 void frame();
+// The game is paused (its pause menu; GV_PauseLevel bit 0).
+bool paused();
 
 // Test harness: replace pad 0 with this state for the next `frames` game frames (before the
 // plugin reads it and before blocking), as if a controller were held. 0 frames cancels.
