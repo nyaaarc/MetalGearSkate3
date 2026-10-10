@@ -1,5 +1,5 @@
 <#
-Metal Gear Skate setup: installs the mod into METAL GEAR SOLID 3 (Master Collection, Steam) and
+Metal Gear Skate 3 setup: installs the mod into METAL GEAR SOLID 3 (Master Collection, Steam) and
 builds the Skate 3 data it needs from the player's own Xbox 360 copy. Run it through setup.cmd.
 
     setup.cmd                          interactive: finds MGS3, asks for your Skate 3 ISO or folder
@@ -173,7 +173,7 @@ if ($WithHDFix) {
 
 # ---- 3. the mod -------------------------------------------------------------------------------------
 
-Step 'Metal Gear Skate'
+Step 'Metal Gear Skate 3'
 $asi = Find-Built 'MetalGearSkate.asi' 'mgs3-plugin\build\Release\MetalGearSkate.asi'
 $core = Find-Built 'MetalGearSkate.core.dll' 'mgs3-plugin\build\Release\MetalGearSkate.core.dll'
 $dll = Find-Built 'skate_ffi.dll' 'skate-ffi\target\x86_64-pc-windows-msvc\release\skate_ffi.dll'

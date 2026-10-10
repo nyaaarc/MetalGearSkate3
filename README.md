@@ -1,4 +1,4 @@
-# Metal Gear Skate
+# Metal Gear Skate 3
 
 Skate 3 skating inside METAL GEAR SOLID 3 (Master Collection Vol.1, Steam). Snake gets
 on a board driven by the Skate 3 engine, riding MGS3's own stages and collision, with

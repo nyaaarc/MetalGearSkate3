@@ -1,5 +1,5 @@
 <#
-Builds the player release zip: dist\MetalGearSkate-<rev>.zip with the plugin, the engine DLL,
+Builds the player release zip: dist\MetalGearSkate3-<rev>.zip with the plugin, the engine DLL,
 setup, README and every licence that applies. No game data. Run through package.cmd.
 
     package.cmd            package the current build outputs
@@ -20,7 +20,7 @@ $dll = Join-Path $Repo 'skate-ffi\target\x86_64-pc-windows-msvc\release\skate_ff
 foreach ($f in $asi, $core, $dll) { if (-not (Test-Path $f)) { throw "not built: $f (run build.cmd or package.cmd -Build)" } }
 
 $rev = (& git -C $Repo rev-parse --short HEAD).Trim()
-$name = "MetalGearSkate-$rev"
+$name = "MetalGearSkate3-$rev"
 $stage = Join-Path $Repo "dist\$name"
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $stage, "$stage\licenses" | Out-Null

@@ -1,5 +1,5 @@
 @echo off
-rem Installs Metal Gear Skate into METAL GEAR SOLID 3 and converts your own Skate 3 data.
+rem Installs Metal Gear Skate 3 into METAL GEAR SOLID 3 and converts your own Skate 3 data.
 rem   setup.cmd            interactive
 rem   setup.cmd -DryRun    show what it would do
 rem   setup.cmd -Skate3 "D:\Skate 3.iso" -Yes
