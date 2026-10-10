@@ -107,7 +107,8 @@ class Stealth {
   int16_t previous_ = 0;
 };
 
-// -1 none, 0 stop, 1 start, 2 start at g_start_at (even while skating): a pending harness request.
+// -1 none, 0 stop, 1 start, 2 start at g_start_at (even while skating), 3 start on foot: a pending
+// harness request.
 std::atomic<int> g_request{-1};
 // -1 none, 0 off, 1 on: a pending stealth change from the test harness.
 std::atomic<int> g_stealth{-1};
@@ -569,6 +570,34 @@ DWORD WINAPI run(LPVOID) {
   if (!floor_fn) log("skate: skate_ffi.dll has no mgsk_floor_below; only deep falls are caught");
   float snake_bones[pose::kSnakeBones * 16];
   bool stealth_enabled = ini_string("stealth_while_skating", "0") != "0";
+  // F5 puts Snake on foot with the board in hand; the player gets on with Y. 0: straight onto the
+  // board, as harness starts are.
+  const bool start_on_foot = ini_string("start_on_foot", "1") != "0";
+  // The engine has no on-foot start, so it steps off before anything is shown: ticked until the
+  // board is down, one tick of Y (its own step-off; its tests dismount the same way), then on until
+  // he stands with the board in hand, all at once. Seen played out, it looked like getting off the
+  // board (user: start "entirely on foot"). False if the engine failed.
+  auto step_off_now = [&]() -> bool {
+    char state[48] = {};
+    bool pressed = false;
+    for (int i = 0; i < 240; ++i) {
+      MgskControls c{};
+      if (!pressed && i >= 2 && f.state(session, state, sizeof(state)) >= 0 && strcmp(state, "PhysicsGround") == 0) {
+        c.buttons = XINPUT_GAMEPAD_Y;
+        pressed = true;
+      }
+      if (f.tick(session, &c)) return false;
+      if (pressed && f.state(session, state, sizeof(state)) >= 0 && strcmp(state, "BipedGround") == 0) {
+        for (int k = 0; k < 20; ++k) {  // the last of the step-off, standing still
+          const MgskControls idle{};
+          if (f.tick(session, &idle)) return false;
+        }
+        return true;
+      }
+    }
+    log("skate: the board never settled to step off it; starting on it");
+    return true;
+  };
   Stealth stealth;
   const float period = f.period(session);
   log("skate: engine ready in %lu ms (tick %.4f s). F5 toggles skating.", GetTickCount() - started, period);
@@ -676,8 +705,9 @@ DWORD WINAPI run(LPVOID) {
     const int remote = g_request.exchange(-1);
     // A harness start at a given spot while already skating starts over there.
     if (remote == 2 && skating) skating = false;
+    const bool key_toggle = key_down && !key_was_down;
     const bool toggled =
-        (key_down && !key_was_down) || ((remote == 1 || remote == 2) && !skating) || (remote == 0 && skating);
+        key_toggle || ((remote == 1 || remote == 2 || remote == 3) && !skating) || (remote == 0 && skating);
     key_was_down = key_down;
 
     game::Vec3* snake = game::snake_position();
@@ -740,6 +770,9 @@ DWORD WINAPI run(LPVOID) {
           skating = true;
           game::block_input(true);
           stealth.begin(stealth_enabled);
+          if ((remote == 3 || (key_toggle && remote < 0 && start_on_foot)) && !step_off_now()) {
+            log("skate: engine error stepping off the board: %s", f.last_error());
+          }
           ticks = 0;
           last_good = {{at[0], at[1], at[2]}, heading};
           riding_spot = {{}, NAN};
@@ -952,7 +985,7 @@ DWORD WINAPI run(LPVOID) {
 
 }  // namespace
 
-void request(bool on) { g_request = on ? 1 : 0; }
+void request(bool on, bool on_foot) { g_request = on ? (on_foot ? 3 : 1) : 0; }
 
 void set_stealth(bool on) { g_stealth = on ? 1 : 0; }
 

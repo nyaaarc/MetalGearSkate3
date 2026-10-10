@@ -43,9 +43,9 @@ On the board, Skate 3's own controls (PlayStation: A = cross, B = circle, Y = tr
 | Right stick: pull back, flick up | ollie (up-left: kickflip, up-right: heelflip) |
 | Right stick: push up, flick back | nollie |
 | Ollie onto a ledge or rail | grind |
-| Y | step off and carry the board |
+| Y | get on the board, or step off and carry it |
 | Start | pause |
-| F5 (keyboard) | get on or off the board |
+| F5 (keyboard) | start skate mode (on foot, board in hand) or end it |
 
 ## Troubleshooting
 

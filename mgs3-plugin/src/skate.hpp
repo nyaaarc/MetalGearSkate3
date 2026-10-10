@@ -23,7 +23,9 @@ void start(const std::filesystem::path& plugin_dir, HMODULE ffi, core::CoreShare
 void stop();
 
 // Test harness: ask the skate thread to start (true) or stop (false) skating, as F5 would.
-void request(bool on);
+// With `on_foot`, the skater steps off the board right after it goes down (as F5 does with the
+// ini's start_on_foot).
+void request(bool on, bool on_foot = false);
 
 // Stealth camouflage while skating, now and for later starts (overrides stealth_while_skating).
 void set_stealth(bool on);
