@@ -614,3 +614,42 @@ object `pick_scene_depth` holds). The board's own depth buffer follows the targe
 The state save covers PS shader resources 0-15, since binding the scene target unbinds it
 wherever the game had it as an input. A frame where this didn't happen falls back to Present;
 `render in_scene off` forces the old way, and `state.render.in_scene` counts frames drawn in it.
+
+## Skate 3 voice and music (Xbox 360 disc, 2026-10-09)
+
+Found by the video session's search of the disc for narration and music; not used by the mod
+yet (skate-ffi plays only the skater's sound banks, so the skater has no voice). Paths are under
+the disc's `data/`; every archive is an EB v3 BIG, read by
+`tools/skate_audio_export/tools/owned_game/big.py`.
+
+- **Scripted dialogue:** `audio/english/nis.big`, 927 lines (~78 min), EA-XMA 48 kHz mono: Coach
+  Frank's Skate School (`TUT-JORD`), the park-editor tutorial (`TUT-CHAL`), challenge intros and
+  outros (`FIL- PHO- PRO- CON- OTL- OTH- 1UP- DEA- FTL-`) and cutscenes (`*-NIS`). Each line is a
+  `<name>.sns` body; its 8-byte SNR header is the same-named `.snr` in the nested `nisresident.big`.
+- **Speech archives** (`audio/english/`): `cameramanspeech.big` (filmers, 76 clips / 977 takes,
+  EA-XMA 44.1 kHz, mostly stereo), `announcerspeech.big` (contest announcers, 405 / 2822, EA-XMA
+  36 kHz; trick names are `443_*_pos_trk_<trick>` and `471_*`), `maincastspeech.big` (pros and
+  main cast, 1283 / 10530, EALayer3 (codec 5) 44.1 kHz; bail grunts `201_<voice>_grunt`) and
+  `livingworldspeech.big` (pedestrians, security, spectators, 3011 / 20096, EA-XMA 36 kHz).
+  Clips are `<event>_<voice>[_<voicename>]_<line>.dat`, each holding its takes' SNS bodies back to
+  back. The nested `<prefix>sth.big` has one `.sth` per clip: 12-byte rows of a big-endian u32
+  take offset and the take's 8-byte EA SNR header. `<prefix>_Events.evt` names the events (e.g.
+  `104_slam`, `340_HOM`). `world_audio.speech_index(path, prefix)`
+  (`tools/skate_audio_export/tools/asset_pipeline/`) parses this, `cameraman` included (setup
+  doesn't index that one).
+- **Decoding a take:** write `X.snr` (the 8-byte header) and `X.sns` (the body slice), then
+  `vgmstream-cli -i -o ?f.wav X.snr` (r2117).
+- **Movies:** `movies/*_english_ntsc.vp6`, EA SCHl, EA-XA v2, 5.1, 48 kHz. Subsongs 1 and 4 are
+  English; dialogue is channel index 1 (`vgmstream-cli -S 0 ...`, then
+  `ffmpeg -af "pan=mono|c0=c1"`).
+- **Subtitles:** `fe/subtitles/subtitles.big` holds `.sub` files with timings and string ids only.
+  The strings are in `big/miscboot.big` → `data/fe/languages/*/LANGUAGE_*_Global_skate3ng.BIN`,
+  compressed or remapped; not decoded.
+- **Licensed music:** `audio/music/ipod.mpf` (with `Ipod_Stream.mus` beside it), 46 songs in the
+  order of the alphabetical soundtrack list, each exactly 30 consecutive subsongs (song n =
+  subsongs 30n+1 .. 30n+30). `vgmstream-cli -S 0 -o "seg/?04s.wav" data/audio/music/ipod.mpf`.
+- **Score:** `world.mpf` and `game.mpf`, one-bar segments at a fixed tempo; the game picks
+  sections live through branch nodes (0x31101, not decoded). MPF v5.3 graph: u16 node count at
+  0x12, u16 node offsets x4 from 0x48. A song is a header node (word 1 = 0x8101) followed by a
+  chain of sound nodes (word 1 = 0x8401; first u16 = subsong number, last u16 = next node), ending
+  at an 0xFFFF node.
