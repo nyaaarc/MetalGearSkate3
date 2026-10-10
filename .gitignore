@@ -5,7 +5,6 @@
 !/.gitignore
 !/.gitmodules
 !/README.md
-!/AGENTS.md
 !/LICENSE
 !/build.cmd
 !/setup.cmd
@@ -17,8 +16,6 @@
 !/skate-ffi/
 !/release/
 !/tools/
-# The video's Remotion project (code only: its public/ holds footage and is ignored below).
-!/video/
 
 # Never commit game data or build output, even inside whitelisted folders.
 **/skate-data/
@@ -42,9 +39,6 @@
 **/*.exe
 **/*.log
 **/__pycache__/
-# The video: captured footage, metrics, music and renders stay local.
-/video/public/
-/video/out/
 **/node_modules/
 **/*.mp4
 **/*.mkv
