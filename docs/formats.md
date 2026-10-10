@@ -661,3 +661,54 @@ the disc's `data/`; every archive is an EB v3 BIG, read by
   0x12, u16 node offsets x4 from 0x48. A song is a header node (word 1 = 0x8101) followed by a
   chain of sound nodes (word 1 = 0x8401; first u16 = subsong number, last u16 = next node), ending
   at an 0xFFFF node.
+
+## MGS3 audio: `.sdt` voice, music and subtitles, `.sdx` effects (2026-10-09)
+
+From the video session's search; the mod doesn't use any of it. Decoders (our own code) are in
+`video/tools/`: `sdt2xwma.py`, `sdt2mtaf.py`, `pacb.py`. vgmstream r2117 can't open `.sdt` itself;
+once the container is unwrapped, ffmpeg (xWMA) and vgmstream (MTAF) decode the contents.
+
+- **`.sdt` container** (`us/vox`, `us/demo`, `us/bgm`, `us/bgm_2`, `us/movie`): a run of
+  little-endian chunks, each with a 16-byte header: u16 type, u16 flags, u32 size (header
+  included), u32 a, u32 b. The file starts with a type 0x10 chunk. Types: 0x01 flags 4 = xWMA
+  audio; 0x01 flags 0x11 = MTAF music; 0x02 cutscene data; 0x04 PACB subtitles; 0x05/0x06 codec
+  lip-sync / face data; 0x10 stream switch (b = next type); 0x20 embedded MP4 (x264) video; 0xF0
+  end.
+- **xWMA** (type 1, flags 4): the first payload is `AMWX`: fmt tag +4, channels +8, rate +0xC,
+  data bytes +0x10, average bytes/s +0x14, block align +0x18, a WAVEFORMATEX at +0x20 (18 + cbSize
+  bytes), then u32 n and n x u32 cumulative decoded bytes (xWMA's `dpds` table). Each later type-1
+  chunk is one packet of `b` bytes. Rebuilt as RIFF XWMA (fmt, dpds, data), ffmpeg 8.1 decodes it.
+  Voice is WMAv2 (0x161) 44.1 kHz, mono 48 kbps (block 2230) or stereo 192 kbps (block 8917).
+  Cutscenes (`us/demo`) and movies are WMAPro (0x162) 48 kHz 5.1, channel 2 (centre) clean
+  dialogue; `op_movie` uses WAVEFORMATEXTENSIBLE (cbSize 22).
+  `python -I video/tools/sdt2xwma.py in.sdt out`, then `ffmpeg -i out.xwma out.wav`.
+- **MTAF music** (type 1, flags 0x11; `us/bgm`, `us/bgm_2`): the first chunk's payload is the
+  0x800-byte MTAF header, its inner name bitwise-inverted at +0x20 (e.g. `title_bgm.mta`). Later
+  chunks carry `b` frames of channels x 0x88 bytes. One `b == 0` chunk at the loop start is padding
+  and must be dropped, or everything after the loop point decodes as full-scale noise. vgmstream
+  decodes the rebuilt `.mtaf` at 48 kHz as 1-3 stereo layers (2/4/6 channels) that the game plays
+  together; `-i` gives one pass without loops. `python -I video/tools/sdt2mtaf.py in.sdt out.mtaf`,
+  then `vgmstream-cli -i -o out.wav out.mtaf`.
+- **PACB subtitles** (type 4): `PACB`, u32 size, u32 0, then records: u32 t0, u32 t1, u16 record
+  length (with its 12-byte header), u16 language (1 en, 2 fr, 3 de, 4 it, 5 es), UTF-8 text
+  NUL-padded, `|` = line break. Every `us/vox/_bp` file has them (3935 English lines), and every
+  `us/demo` cutscene (2116). Codec calls (`us/vox/r*`) have none; the other languages' codec/_bp
+  folders hold LCGB codec subtitle files with descriptive names.
+  `python -I video/tools/pacb.py <dir> out.tsv`.
+- **`us/vox` names** (inferred from transcripts and voice matching): codec calls `rm1m/rm2m` Zero,
+  `rm1p` Para-Medic, `rm1s/rm2s` Sigint, `rm1e/rm2e` EVA, `rvrm/rvrp/rvrb` the Virtuous Mission's
+  Zero / Para-Medic / The Boss, `rv2b` The Boss's item calls, `rpsv` Para-Medic's save calls,
+  `rnod03x`/`rnod13x` Snake's / EVA's eating reactions, `re2m` enemy radio. `us/vox/_bp`:
+  `ene_NNN_0V` guards (line NNN, voice V 1-4), `spe` guard variants, `rai` Raikov, `wor`
+  scientists and workers, `jny` Johnny. `us/vox/_bp/mXXX_*_g01N_NN` are in-game boss and companion
+  lines: m100 Ocelot, m130 The Pain, m180 The Fear, m240 The End, m275 The Fury, m370 The Sorrow,
+  m460 the Volgin fight (Ocelot cheering), m485/m580 EVA on the bike, m550 EVA at the Shagohod,
+  m595 the EVA escort, m610 The Boss. Game-over calls: `us/vox/m690_010_r011_01..20` (voice only),
+  `r011_99` (a lone shout), `us/vox/_bp/m690_010_g010_01..25` (with subtitles; 26-32 are the
+  time-paradox calls), in groups of five: 01-05 Zero, 06-10 Para-Medic, 11-15 probably Sigint,
+  16-25 EVA or The Boss (voice matching can't separate them).
+- **Sound effects:** `us/stage/*/pk*.sdx` are IPSQ banks. IWAV has 16-byte entries (`0x1fc300ff`,
+  then offset | 0x80000000); IPAT/ISEQ hold patches and sequences. The PS-ADPCM data is in BVAG
+  (u32 size, data), or in the BPVG block after TERM when BVAG's size is 0: 1412 distinct samples.
+  `Misc/bp_se.dat` is an SEO3 bank of 18 PS-ADPCM samples (pitch 0x1000, 48 kHz). The banks have no
+  names; the "!" alert sting and the codec ring aren't identified yet.
