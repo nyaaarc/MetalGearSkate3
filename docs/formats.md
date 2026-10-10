@@ -461,6 +461,10 @@ MGS1's HZD (FoxdieTeam/mgs_reversing `fmt_hzd.h`) is not the layout; vocabulary 
   thread moves the board by that gap (the skater hand nearest the deck, within 0.6 m), eased over
   8 ticks (skate.cpp `Carry`). His hand is nearer his body than the skater's, so the board now
   clips his legs a little; the user accepted that.
+- **The button map with the developer menu at start:** not only MGSHDFix's `Skip Launcher`; with
+  `Start Game in Developer Menu=1` the map (`exe+1E20020`) and its table stayed all zero even
+  after a launch through the launcher (2026-10-09, read from outside the game with the mod off).
+  The plugin's repair covers both.
 - **`mirror_x`:** reflects the skater through his own sagittal plane (root-local X) and swaps
   LEFT/RIGHT. Because the skater stands sideways on the board, this also flips the stance (feet
   swap board ends). Off until MGS3's handedness is settled.
@@ -586,6 +590,12 @@ shadow-like draws) appeared in this frame.
 - **Held items in the gate:** a weapon's pieces can sit ~75 mm from the joint they hang on, as
   the game has them, so the gate's held-item check now measures how much an item's distance from
   its joint differs from the game's (`held_mm`; 0.0 mm with a weapon equipped), not the distance.
+- **Game crash at `exe+0xC5C3C` (reading 0) on `(s092b)Night` (2026-10-09):** selecting a weapon
+  in the weapons panel. The stack runs from Snake's actor update (`exe+33055E`) through
+  `exe+3662BC`, `3645D5`, `35A7EB`, `3664BC`, `36696E`, `359DD9`, `7338DA`, `734D2D`, `7E83E0`,
+  `73295C`, `725F8E`, `C64BE`. It happens without skating, and with the mod off (MGSHDFix only,
+  the button map filled in from outside). That variant is the escape after the torture (Snake
+  shirtless, gear taken): the panel shows no icons, so the stage has no weapon models to load.
 - **Game crash at `exe+0x115F64` (reading 0):** in a function called from the input code
   (`exe+110E92`, near the pad copy at `exe+111C80`) that fetches an interface and walks 16 digital
   and 4 analog handles through its vtable (+0x80, +0xA0). Seen twice (once in Windows' crash log

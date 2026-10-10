@@ -71,6 +71,9 @@ and the `%LOCALAPPDATA%\MetalGearSkate` folder.
   and the Xbox pad stops working: unplug it, or move the pad first in Steam's controller order.
   `logs\MGSHDFix_Game.log` lists the controllers and bindings the game sees. (With MGSHDFix's
   `Skip Launcher`, the game's button map stays empty; the mod fills it in.)
+- **The game crashes when you pick a weapon on `(s092b)Night`:** that's the game, with or without
+  the mod. That entry is the escape after the torture: Snake's gear was taken, so the weapons
+  panel shows no icons, and selecting one crashes. Skate there, but leave the weapons menu alone.
 - **Something went wrong:** `plugins\MetalGearSkate.log` says what the mod did. Include it in a
   bug report.
 
