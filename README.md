@@ -4,6 +4,8 @@ Skate 3 skating inside METAL GEAR SOLID 3 (Master Collection Vol.1, Steam). Snak
 on a board driven by the Skate 3 engine, riding MGS3's own stages and collision, with
 Skate 3's controls, tricks, grinds and bails.
 
+![Snake kickflips in Groznyj Grad](docs/screenshots/kickflip.jpg)
+
 **No game files are included.** Setup builds what the mod needs from your own copies of both
 games.
 
