@@ -232,7 +232,9 @@ analogues to find, guided by the MGS2 patterns and the GirianSeed decomp.
   map stay zero (read from memory). Every face, shoulder and trigger button then arrives in
   pad 0's source record as `0xFF06`, i.e. all of them at once. Start and Select still come
   through alone. Skating reads XInput directly, so it was unaffected.
-- **Vanilla:** a launch through the launcher has 0-9 in both.
+- **Vanilla:** a launch through the launcher has 0-9 in both, unless MGSHDFix starts the game in
+  the developer menu (`Start Game in Developer Menu=1`): then both stayed zero even after the
+  launcher (2026-10-09, read from outside the game with the mod off).
 - **The repair:** MGSHDFix's newer pressure-input code reruns the init when the map is zero, but
   only with its pressure feature on. The plugin now does the same in its pad copy hook and copies
   the table in: one attempt on the first frame gives 0-9.
@@ -461,10 +463,6 @@ MGS1's HZD (FoxdieTeam/mgs_reversing `fmt_hzd.h`) is not the layout; vocabulary 
   thread moves the board by that gap (the skater hand nearest the deck, within 0.6 m), eased over
   8 ticks (skate.cpp `Carry`). His hand is nearer his body than the skater's, so the board now
   clips his legs a little; the user accepted that.
-- **The button map with the developer menu at start:** not only MGSHDFix's `Skip Launcher`; with
-  `Start Game in Developer Menu=1` the map (`exe+1E20020`) and its table stayed all zero even
-  after a launch through the launcher (2026-10-09, read from outside the game with the mod off).
-  The plugin's repair covers both.
 - **`mirror_x`:** reflects the skater through his own sagittal plane (root-local X) and swaps
   LEFT/RIGHT. Because the skater stands sideways on the board, this also flips the stance (feet
   swap board ends). Off until MGS3's handedness is settled.
